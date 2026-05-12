@@ -1,0 +1,125 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bringup-platform"
+version = "0.0.1"
+description = "Plataforma desktop de bring-up de hardware via JTAG (IEEE 1149.1) com GUI PySide6, plugins por projeto e integração com instrumentos."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Rafael Macedo", email = "rafael.macedoengenharia@gmail.com" }]
+license = { text = "Proprietary — a definir" }
+keywords = ["jtag", "bring-up", "hardware", "testing", "boundary-scan", "pyside6"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Manufacturing",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Embedded Systems",
+    "Topic :: Software Development :: Testing",
+]
+
+dependencies = [
+    "PySide6>=6.7",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/RSMEngenhariaJF/JTAG_Tester"
+Repository = "https://github.com/RSMEngenhariaJF/JTAG_Tester.git"
+Issues = "https://github.com/RSMEngenhariaJF/JTAG_Tester/issues"
+
+[project.scripts]
+bringup = "app.cli.main:main"
+
+[project.gui-scripts]
+bringup-gui = "app.main:main"
+
+# ─────────────────────────────────────────────────────────────
+# setuptools — src layout com pacotes top-level (spec §6.5.1)
+# ─────────────────────────────────────────────────────────────
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ─────────────────────────────────────────────────────────────
+# ruff
+# ─────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle + pyflakes
+    "I",             # isort
+    "N",             # pep8-naming
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "SIM",           # simplify
+    "RUF",           # ruff-specific
+]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["N802"]  # nomes de teste podem fugir de snake_case quando necessário
+
+# ─────────────────────────────────────────────────────────────
+# mypy — strict no Core; tests excluídos por agora (Sprint 02)
+# ─────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = ["PySide6.*"]
+ignore_missing_imports = false
+
+# ─────────────────────────────────────────────────────────────
+# pytest
+# ─────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["-ra", "--strict-markers"]
+markers = [
+    "hardware: requer hardware real (FT2232H + placa-ref); roda só em runner HIL",
+    "gui: requer QApplication; roda off-screen em CI",
+    "characterization: sessão longa; suite separada",
+]
+
+# ─────────────────────────────────────────────────────────────
+# coverage
+# ─────────────────────────────────────────────────────────────
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
