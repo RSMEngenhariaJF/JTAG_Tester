@@ -20,6 +20,29 @@ AP_BANKSEL_MASK: Final[int] = 0x00F00000
 
 _32BIT: Final[int] = 0xFFFF_FFFF
 
+# ARM Cortex-M debug register addresses (byte-addressed)
+_DHCSR: Final[int] = 0xE000_EDF0  # Debug Halting Control/Status
+_DCRSR: Final[int] = 0xE000_EDF4  # Debug Core Register Select
+_DCRDR: Final[int] = 0xE000_EDF8  # Debug Core Register Data
+_AIRCR: Final[int] = 0xE000_ED0C  # Application Interrupt/Reset Control
+
+_DHCSR_DBGKEY: Final[int] = 0xA05F_0000
+_DHCSR_C_DEBUGEN: Final[int] = 1 << 0
+_DHCSR_C_HALT: Final[int] = 1 << 1
+_DHCSR_S_REGRDY: Final[int] = 1 << 16
+_DHCSR_S_HALT: Final[int] = 1 << 17
+
+_AIRCR_VECTKEY: Final[int] = 0x05FA_0000
+_AIRCR_SYSRESETREQ: Final[int] = 1 << 2
+
+_DCRSR_REGWNR: Final[int] = 1 << 16
+
+# DP CTRL/STAT power-up bits
+_CTRL_CSYSPWRUPREQ: Final[int] = 1 << 31
+_CTRL_CDBGPWRUPREQ: Final[int] = 1 << 30
+_CTRL_CSYSPWRUPACK: Final[int] = 1 << 29
+_CTRL_CDBGPWRUPACK: Final[int] = 1 << 28
+
 
 # ---------------------------------------------------------------------------
 # SWD — tipos auxiliares
@@ -112,7 +135,6 @@ class SimulatedProbe:
         self._ap0_idr: int = ap0_idr & _32BIT
         self._ap0_csw: int = 0x2300_0052
         self._ap0_tar: int = 0x0000_0000
-        self._ap0_drw: int = 0x0000_0000
 
         # --- memória simulada (word-addressed) ---
         self._memory: dict[int, int] = {k: v & _32BIT for k, v in (memory or {}).items()}
@@ -120,6 +142,12 @@ class SimulatedProbe:
         # --- estado SWD genérico ---
         self._swd_connected: bool = False
         self._fault: bool = False
+
+        # --- ARM debug state ---
+        self._cpu_halted: bool = False
+        self._core_registers: dict[int, int] = {}  # reg index → value
+        self._dcrdr: int = 0
+        self._reset_count: int = 0
 
         # --- JTAG chain ---
         idcodes = jtag_chain or [0x0BA0_0477]
@@ -166,7 +194,13 @@ class SimulatedProbe:
         value &= _32BIT
         match reg:
             case "CTRL/STAT":
-                self._dp_ctrl_stat = value
+                # Auto-acknowledge power-up requests (bits are read-only in hardware)
+                stored = value & ~(_CTRL_CSYSPWRUPACK | _CTRL_CDBGPWRUPACK)
+                if value & _CTRL_CSYSPWRUPREQ:
+                    stored |= _CTRL_CSYSPWRUPACK
+                if value & _CTRL_CDBGPWRUPREQ:
+                    stored |= _CTRL_CDBGPWRUPACK
+                self._dp_ctrl_stat = stored
             case "SELECT":
                 self._dp_select = value
             case _:
@@ -188,7 +222,11 @@ class SimulatedProbe:
             case "TAR":
                 return self._ap0_tar
             case "DRW":
-                return self._memory.get(self._ap0_tar >> 2, 0)
+                # Posted read: load new value into RDBUFF, return previous RDBUFF
+                new_val = self._mem_read(self._ap0_tar)
+                old_rdbuff = self._dp_rdbuff
+                self._dp_rdbuff = new_val
+                return old_rdbuff
             case _:
                 raise ValueError(f"AP register desconhecido: {reg!r}")
 
@@ -204,7 +242,7 @@ class SimulatedProbe:
             case "TAR":
                 self._ap0_tar = value
             case "DRW":
-                self._memory[self._ap0_tar >> 2] = value
+                self._mem_write(self._ap0_tar, value)
             case _:
                 raise ValueError(f"AP register não gravável ou desconhecido: {reg!r}")
 
@@ -264,3 +302,39 @@ class SimulatedProbe:
     def _check_swd_connected(self) -> None:
         if not self._swd_connected:
             raise RuntimeError("SWD não inicializado — chame swd_line_reset() primeiro")
+
+    def _mem_read(self, byte_addr: int) -> int:
+        """Lê da memória simulada ou de debug register especial."""
+        if byte_addr == _DHCSR:
+            val = _DHCSR_S_REGRDY  # S_REGRDY sempre disponível
+            if self._cpu_halted:
+                val |= _DHCSR_S_HALT
+            return val
+        if byte_addr == _DCRDR:
+            return self._dcrdr & _32BIT
+        if byte_addr == _AIRCR:
+            return 0xFA05_0000  # VECTKEY reads as 0xFA05
+        return self._memory.get(byte_addr >> 2, 0)
+
+    def _mem_write(self, byte_addr: int, value: int) -> None:
+        """Escreve na memória simulada ou em debug register especial."""
+        if byte_addr == _DHCSR:
+            if (value & 0xFFFF_0000) == _DHCSR_DBGKEY:
+                self._cpu_halted = bool(value & _DHCSR_C_HALT)
+            return
+        if byte_addr == _DCRSR:
+            reg = value & 0x1F
+            if value & _DCRSR_REGWNR:  # write to core register
+                self._core_registers[reg] = self._dcrdr & _32BIT
+            else:  # read core register into DCRDR
+                self._dcrdr = self._core_registers.get(reg, 0)
+            return
+        if byte_addr == _DCRDR:
+            self._dcrdr = value & _32BIT
+            return
+        if byte_addr == _AIRCR:
+            if (value & 0xFFFF_0000) == _AIRCR_VECTKEY and value & _AIRCR_SYSRESETREQ:
+                self._reset_count += 1
+                self._cpu_halted = False
+            return
+        self._memory[byte_addr >> 2] = value & _32BIT

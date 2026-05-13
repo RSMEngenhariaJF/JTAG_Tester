@@ -92,10 +92,19 @@ class TestSWDAP:
         assert probe.read_ap(0, "DRW") == 0
 
     def test_write_and_read_drw_via_memory(self, probe: SimulatedProbe) -> None:
+        # DRW reads are posted: actual data lands in RDBUFF after the next transaction
         probe.write_ap(0, "TAR", 0x0000_0004)
         probe.write_ap(0, "DRW", 0xABCD_1234)
         probe.write_ap(0, "TAR", 0x0000_0004)
-        assert probe.read_ap(0, "DRW") == 0xABCD_1234
+        probe.read_ap(0, "DRW")  # posted read — data goes to RDBUFF
+        assert probe.read_dp("RDBUFF") == 0xABCD_1234
+
+    def test_drw_posted_read_returns_old_rdbuff(self, probe: SimulatedProbe) -> None:
+        probe.write_memory_word(0x0000_0008, 0xCAFE_BABE)
+        probe.write_ap(0, "TAR", 0x0000_0008)
+        first = probe.read_ap(0, "DRW")  # returns old RDBUFF (0), loads 0xCAFE_BABE
+        assert first == 0
+        assert probe.read_dp("RDBUFF") == 0xCAFE_BABE
 
     def test_unknown_ap_raises(self, probe: SimulatedProbe) -> None:
         with pytest.raises(NotImplementedError, match="AP 1"):
@@ -138,6 +147,96 @@ class TestSWDMemory:
     def test_memory_not_accessible_before_reset(self, probe_raw: SimulatedProbe) -> None:
         with pytest.raises(RuntimeError):
             probe_raw.read_memory_word(0x0)
+
+
+# ===========================================================================
+# SWD — CTRL/STAT power-up auto-ack
+# ===========================================================================
+
+
+class TestSWDPowerUp:
+    def test_csyspwrupreq_auto_acks(self, probe: SimulatedProbe) -> None:
+        probe.write_dp("CTRL/STAT", 1 << 31)  # CSYSPWRUPREQ
+        assert probe.read_dp("CTRL/STAT") & (1 << 29)  # CSYSPWRUPACK set
+
+    def test_cdbgpwrupreq_auto_acks(self, probe: SimulatedProbe) -> None:
+        probe.write_dp("CTRL/STAT", 1 << 30)  # CDBGPWRUPREQ
+        assert probe.read_dp("CTRL/STAT") & (1 << 28)  # CDBGPWRUPACK set
+
+    def test_no_req_no_ack(self, probe: SimulatedProbe) -> None:
+        probe.write_dp("CTRL/STAT", 0x0000_0001)
+        stat = probe.read_dp("CTRL/STAT")
+        assert not (stat & (1 << 29))
+        assert not (stat & (1 << 28))
+
+
+# ===========================================================================
+# SWD — ARM debug registers via DRW
+# ===========================================================================
+
+
+class TestArmDebugRegisters:
+    _DHCSR = 0xE000_EDF0
+    _DCRSR = 0xE000_EDF4
+    _DCRDR = 0xE000_EDF8
+    _AIRCR = 0xE000_ED0C
+
+    def _drw_write(self, probe: SimulatedProbe, addr: int, value: int) -> None:
+        probe.write_ap(0, "TAR", addr)
+        probe.write_ap(0, "DRW", value)
+
+    def _drw_read(self, probe: SimulatedProbe, addr: int) -> int:
+        probe.write_ap(0, "TAR", addr)
+        probe.read_ap(0, "DRW")
+        return probe.read_dp("RDBUFF")
+
+    def test_halt_sets_cpu_halted(self, probe: SimulatedProbe) -> None:
+        self._drw_write(probe, self._DHCSR, 0xA05F_0003)  # DBGKEY | C_HALT | C_DEBUGEN
+        assert probe._cpu_halted
+
+    def test_dhcsr_read_reflects_s_halt(self, probe: SimulatedProbe) -> None:
+        probe._cpu_halted = True
+        dhcsr = self._drw_read(probe, self._DHCSR)
+        assert dhcsr & (1 << 17)  # S_HALT
+
+    def test_dhcsr_read_s_halt_clear_when_running(self, probe: SimulatedProbe) -> None:
+        probe._cpu_halted = False
+        dhcsr = self._drw_read(probe, self._DHCSR)
+        assert not (dhcsr & (1 << 17))
+
+    def test_resume_clears_cpu_halted(self, probe: SimulatedProbe) -> None:
+        probe._cpu_halted = True
+        self._drw_write(probe, self._DHCSR, 0xA05F_0001)  # DBGKEY | C_DEBUGEN only
+        assert not probe._cpu_halted
+
+    def test_dhcsr_write_without_dbgkey_ignored(self, probe: SimulatedProbe) -> None:
+        self._drw_write(probe, self._DHCSR, 0x0000_0003)  # no DBGKEY
+        assert not probe._cpu_halted
+
+    def test_write_and_read_core_register(self, probe: SimulatedProbe) -> None:
+        # Write DCRDR=0xDEAD, then DCRSR with REGWNR to write R0
+        self._drw_write(probe, self._DCRDR, 0xDEAD_1234)
+        self._drw_write(probe, self._DCRSR, (1 << 16) | 0)  # REGWNR | R0
+        assert probe._core_registers.get(0) == 0xDEAD_1234
+
+    def test_read_core_register_via_dcrsr(self, probe: SimulatedProbe) -> None:
+        probe._core_registers[2] = 0xABCD_0000  # R2
+        self._drw_write(probe, self._DCRSR, 2)  # read R2
+        val = self._drw_read(probe, self._DCRDR)
+        assert val == 0xABCD_0000
+
+    def test_aircr_sysreset_increments_counter(self, probe: SimulatedProbe) -> None:
+        self._drw_write(probe, self._AIRCR, 0x05FA_0004)  # VECTKEY | SYSRESETREQ
+        assert probe._reset_count == 1
+
+    def test_aircr_without_vectkey_ignored(self, probe: SimulatedProbe) -> None:
+        self._drw_write(probe, self._AIRCR, 0x0000_0004)  # no VECTKEY
+        assert probe._reset_count == 0
+
+    def test_aircr_sysreset_clears_halt(self, probe: SimulatedProbe) -> None:
+        probe._cpu_halted = True
+        self._drw_write(probe, self._AIRCR, 0x05FA_0004)
+        assert not probe._cpu_halted
 
 
 # ===========================================================================
