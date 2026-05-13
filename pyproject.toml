@@ -39,6 +39,9 @@ dev = [
     "mypy>=1.10",
     "pre-commit>=3.7",
 ]
+hardware = [
+    "pyftdi>=0.55",   # FT2232H via libusb — instalar driver com Zadig (Windows)
+]
 
 [project.urls]
 Homepage = "https://github.com/RSMEngenhariaJF/JTAG_Tester"
