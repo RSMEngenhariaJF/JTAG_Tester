@@ -1,8 +1,12 @@
-# Plataforma de Bring-up de Hardware via JTAG
+# Plataforma de Bring-up de Hardware via SWD/JTAG
 
 Aplicação desktop com interface gráfica para automação do *bring-up* de placas
-eletrônicas baseadas em microcontroladores, utilizando JTAG (IEEE 1149.1) como
-meio principal de teste e diagnóstico.
+eletrônicas baseadas em microcontroladores, utilizando **SWD** (Serial Wire Debug)
+e **JTAG** (IEEE 1149.1) como meios de teste e diagnóstico.
+
+SWD é implementado primeiro (Fase 1) por ser mais simples (2 fios) e entregar
+debug ARM (memória, registradores, halt/resume) mais cedo; JTAG vem na Fase 2
+para Boundary Scan e cadeias multi-dispositivo.
 
 A aplicação é projetada como **plataforma reutilizável** entre múltiplos
 projetos de hardware, com extensibilidade por plugins, cobertura de teste
@@ -117,8 +121,8 @@ $env:BRINGUP_DEV = "1"   # força modo dev (arquivo + console em DEBUG)
 ## Status
 
 **Sprint 01 — Bootstrap & Esqueleto GUI** em andamento. Funcionalidades reais
-de JTAG/plugins entram a partir do Sprint 03+. Plano completo de sprints
-mantido fora do repositório (em `privada/doc/SPRINTS.md`).
+entram a partir do Sprint 03+ (SWD primeiro, JTAG a seguir). Plano completo de
+sprints mantido fora do repositório (em `privada/doc/SPRINTS.md`).
 
 ## Licença
 

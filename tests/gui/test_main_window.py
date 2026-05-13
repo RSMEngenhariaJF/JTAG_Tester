@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from app.gui.main_window import MainWindow  # noqa: E402
+from app.gui.main_window import MainWindow
 
 pytestmark = pytest.mark.gui
 

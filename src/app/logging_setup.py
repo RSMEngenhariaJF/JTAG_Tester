@@ -16,6 +16,7 @@ portanto nenhum log gerado por essa configuração sobe para o repositório.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from datetime import datetime
@@ -50,10 +51,8 @@ def _prune_old_logs(directory: Path, keep: int = MAX_LOG_FILES) -> None:
     if excess <= 0:
         return
     for old in files[:excess]:
-        try:
+        with contextlib.suppress(OSError):
             old.unlink()
-        except OSError:
-            pass
 
 
 def setup_logging(level: int = logging.INFO) -> Path | None:

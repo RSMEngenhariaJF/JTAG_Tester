@@ -81,7 +81,7 @@ class MainWindow(QMainWindow):
         # Ferramentas
         m_tools = menubar.addMenu("&Ferramentas")
         m_tools.addAction(self._placeholder_action("Console Interativo..."))
-        m_tools.addAction(self._placeholder_action("Bancada › Instrumentos..."))
+        m_tools.addAction(self._placeholder_action("Bancada > Instrumentos..."))
         m_tools.addAction(self._placeholder_action("Histórico de Execuções..."))
 
         # Ajuda

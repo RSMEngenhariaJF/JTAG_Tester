@@ -11,7 +11,7 @@ from app import __version__
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bringup",
-        description="Plataforma de Bring-up via JTAG — interface de linha de comando.",
+        description="Plataforma de Bring-up via SWD/JTAG — interface de linha de comando.",
     )
     parser.add_argument(
         "--version",

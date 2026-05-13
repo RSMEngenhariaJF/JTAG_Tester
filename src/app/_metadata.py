@@ -16,9 +16,7 @@ from typing import Final
 NAME: Final[str] = "Plataforma de Bring-up"
 PACKAGE_NAME: Final[str] = "bringup-platform"
 VERSION: Final[str] = "0.0.1"
-DESCRIPTION: Final[str] = (
-    "Aplicação desktop para automação de bring-up de hardware via JTAG."
-)
+DESCRIPTION: Final[str] = "Aplicação desktop para automação de bring-up de hardware via SWD/JTAG."
 
 AUTHOR: Final[str] = "Rafael Macedo"
 AUTHOR_EMAIL: Final[str] = "rafael.macedoengenharia@gmail.com"
