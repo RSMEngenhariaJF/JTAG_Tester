@@ -1,0 +1,68 @@
+{
+  "name": "Sensor Gateway v1",
+  "project_code": "SGW-001",
+  "board": "nucleo_f446re",
+  "description": "Gateway: sensor I2C + saída RS-485 + regulador 3.3V + leitura ADC",
+  "pins": {
+    "rs485_tx_en": {
+      "port": "GPIOB", "pin": 6,
+      "description": "Enable TX RS-485 (ativo alto)"
+    },
+    "status_led": {
+      "port": "GPIOA", "pin": 5,
+      "description": "LED de status do sistema"
+    },
+    "pwr_3v3_en": {
+      "port": "GPIOB", "pin": 12,
+      "description": "Enable regulador 3.3V"
+    },
+    "uart2_tx": {
+      "port": "GPIOA", "pin": 2,
+      "description": "USART2 TX → driver RS-485",
+      "peripheral": { "type": "UART", "name": "USART2", "role": "TX",
+                      "params": { "baudrate": 115200 } }
+    },
+    "uart2_rx": {
+      "port": "GPIOA", "pin": 3,
+      "description": "USART2 RX ← driver RS-485",
+      "peripheral": { "type": "UART", "name": "USART2", "role": "RX",
+                      "params": { "baudrate": 115200 } }
+    },
+    "i2c1_sda": {
+      "port": "GPIOB", "pin": 7,
+      "description": "I2C1 SDA — sensor de temperatura",
+      "peripheral": { "type": "I2C", "name": "I2C1", "role": "SDA",
+                      "params": { "freq_hz": 400000 } }
+    },
+    "i2c1_scl": {
+      "port": "GPIOB", "pin": 8,
+      "description": "I2C1 SCL — sensor de temperatura",
+      "peripheral": { "type": "I2C", "name": "I2C1", "role": "SCL",
+                      "params": { "freq_hz": 400000 } }
+    },
+    "sensor_int": {
+      "port": "GPIOC", "pin": 0,
+      "description": "Interrupção do sensor (borda de descida)",
+      "active_low": true,
+      "peripheral": { "type": "EXTI", "name": "", "role": "FALLING" }
+    },
+    "v_supply": {
+      "port": "GPIOA", "pin": 0,
+      "description": "Leitura tensão de alimentação (divisor 1:2)",
+      "peripheral": { "type": "ADC", "name": "ADC1", "role": "IN0",
+                      "params": { "resolution": 12, "vref": 3.3, "scale": 2.0 } }
+    },
+    "motor_pwm": {
+      "port": "GPIOA", "pin": 8,
+      "description": "PWM de controle do motor via TIM1 CH1",
+      "peripheral": { "type": "PWM", "name": "TIM1", "role": "CH1",
+                      "params": { "freq_hz": 20000, "af": 1 } }
+    }
+  },
+  "test_paths": [
+    "TESTES_PLATAFORMA/sensor_gateway/test_rs485.py",
+    "TESTES_PLATAFORMA/sensor_gateway/test_i2c_sensor.py",
+    "TESTES_PLATAFORMA/sensor_gateway/test_adc.py"
+  ],
+  "instruments": ["dmm"]
+}

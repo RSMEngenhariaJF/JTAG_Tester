@@ -144,7 +144,7 @@ class FT2232HTransport:
 
     def assert_nrst(self) -> None:
         """Puxa nRST para LOW (reset ativo)."""
-        if not self._nrst_pin:
+        if not self._nrst:
             raise RuntimeError("nRST não habilitado neste transporte")
         self._ftdi.write_data(bytes([_CMD_SET_LOW, _PINS_IDLE & ~_PIN_NRST, self._dir_host]))
 

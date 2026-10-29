@@ -27,7 +27,7 @@ ISSUES_URL: Final[str] = "https://github.com/RSMEngenhariaJF/JTAG_Tester/issues"
 
 LICENSE: Final[str] = "Proprietary — a definir"
 
-SPRINT: Final[str] = "Sprint 01 — Bootstrap & Esqueleto GUI"
+SPRINT: Final[str] = "Sprint 15 — Instrumentos, Plugins e Export"
 SPEC_VERSION: Final[str] = "v0.5"
 
 # Raiz do projeto quando rodando de checkout (src layout). Em binários

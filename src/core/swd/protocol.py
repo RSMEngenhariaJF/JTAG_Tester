@@ -43,8 +43,10 @@ AP_ADDR_DRW: Final[int] = 0x0C
 AP_ADDR_IDR: Final[int] = 0xFC  # banco 0xF
 AP_ADDR_BASE: Final[int] = 0xF8  # banco 0xF
 
-# Sequência de seleção JTAG→SWD (IHI0031C §5.2.1)
-_JTAG_TO_SWD_SEQ: Final[int] = 0x9EE7
+# Sequência de seleção JTAG→SWD (IHI0031C §B4.3.2): 0x79E7 enviado LSB primeiro.
+# _build_write_cmd usa to_bytes(2,"little") → envia [0xE7, 0x79], cada byte LSB-first.
+# Wire resultante: 1,1,1,0,0,1,1,1,1,0,0,1,1,1,1,0  ← correto conforme spec ARM.
+_JTAG_TO_SWD_SEQ: Final[int] = 0x79E7
 
 _LINE_RESET_BITS: Final[int] = 56  # spec exige ≥ 50
 _IDLE_BITS: Final[int] = 8
@@ -157,21 +159,20 @@ class SWDProtocol:
     def jtag_to_swd(self) -> None:
         """Sequência completa de ativação SWD a partir de um estado JTAG.
 
-        Sequência (IHI0031C §5.2.1):
-            1. Line reset
-            2. Magic 16-bit 0x9EE7 (LSB first)
-            3. Line reset
-            4. 8 ciclos idle (SWDIO=LOW)
+        Sequência exata (IHI0031 §B4.3.2) — sem idle bits entre os passos 1-3:
+            1. ≥50 ciclos HIGH  (JTAG TAP → Test-Logic-Reset)
+            2. Palavra mágica 0x79E7, LSB first  (SWJ-DP detecta switch)
+            3. ≥50 ciclos HIGH  (SWD DP → reset state)
+            4. ≥2 ciclos LOW    (ativa interface SWD)
+        Não chama line_reset() para evitar os 8 bits LOW que essa função acrescenta
+        entre os passos 1 e 2, o que poderia tirar o TAP de Test-Logic-Reset.
         """
-        self.line_reset()
-        self._t.write_bits(_JTAG_TO_SWD_SEQ, 16)
-        # segundo line reset (sem idle entre a sequência e o reset)
-        full, rem = divmod(_LINE_RESET_BITS, 8)
-        for _ in range(full):
+        for _ in range(7):  # 56 bits HIGH (passo 1)
             self._t.write_bits(0xFF, 8)
-        if rem:
-            self._t.write_bits((1 << rem) - 1, rem)
-        self._t.write_bits(0x00, _IDLE_BITS)
+        self._t.write_bits(_JTAG_TO_SWD_SEQ, 16)  # passo 2
+        for _ in range(7):  # 56 bits HIGH (passo 3)
+            self._t.write_bits(0xFF, 8)
+        self._t.write_bits(0x00, 8)  # 8 bits LOW (passo 4)
 
     # ------------------------------------------------------------------
     # Acesso ao DP (Debug Port)

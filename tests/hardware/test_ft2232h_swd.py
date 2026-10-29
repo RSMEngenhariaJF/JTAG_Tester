@@ -79,7 +79,7 @@ class TestADIv5Init:
         assert hw_adiv5 is not None
 
     def test_dpidr_matches_stm32(self, ft2232h_transport: object) -> None:
-        """STM32 com Cortex-M3/M4: DPIDR = 0x2BA01477."""
+        """STM32F446RE (Cortex-M4): DPIDR = 0x2BA01477."""
         from core.adiv5.adiv5 import ADIv5
         from core.swd.protocol import SWDProtocol
 
@@ -96,7 +96,7 @@ class TestADIv5Init:
 
 @pytest.mark.hardware
 class TestMemoryAccess:
-    # SRAM interna de STM32 começa em 0x2000_0000 (pelo menos 20 KB)
+    # STM32F446RE: 128 KB SRAM @ 0x2000_0000
     _SRAM_ADDR = 0x2000_0000
 
     def test_write_and_read_sram(self, hw_adiv5: object) -> None:

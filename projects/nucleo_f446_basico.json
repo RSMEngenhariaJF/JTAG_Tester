@@ -1,0 +1,30 @@
+{
+  "name": "Nucleo F446 — Básico",
+  "project_code": "NUCLEO-F446-001",
+  "board": "nucleo_f446re",
+  "description": "Suite padrão com LED LD2 e botão B1 da placa Nucleo",
+  "pins": {
+    "led": {
+      "port": "GPIOA", "pin": 5,
+      "description": "LED verde LD2"
+    },
+    "button": {
+      "port": "GPIOC", "pin": 13,
+      "description": "Botão azul B1", "active_low": true
+    },
+    "uart2_tx": {
+      "port": "GPIOA", "pin": 2,
+      "description": "USART2 TX — conector ST-Link virtual COM",
+      "peripheral": { "type": "UART", "name": "USART2", "role": "TX",
+                      "params": { "baudrate": 115200 } }
+    },
+    "uart2_rx": {
+      "port": "GPIOA", "pin": 3,
+      "description": "USART2 RX — conector ST-Link virtual COM",
+      "peripheral": { "type": "UART", "name": "USART2", "role": "RX",
+                      "params": { "baudrate": 115200 } }
+    }
+  },
+  "test_paths": [],
+  "instruments": []
+}

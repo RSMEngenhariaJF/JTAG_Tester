@@ -192,7 +192,7 @@ class TestLineReset:
 class TestJtagToSWD:
     def test_contains_magic_sequence(self, proto: SWDProtocol, t: MockTransport) -> None:
         proto.jtag_to_swd()
-        assert t.has_write(0x9EE7, 16)
+        assert t.has_write(0x79E7, 16)
 
     def test_starts_with_line_reset(self, proto: SWDProtocol, t: MockTransport) -> None:
         proto.jtag_to_swd()
@@ -210,7 +210,7 @@ class TestJtagToSWD:
 
     def test_magic_between_resets(self, proto: SWDProtocol, t: MockTransport) -> None:
         proto.jtag_to_swd()
-        idx_magic = next(i for i, (v, n) in enumerate(t.writes) if (v, n) == (0x9EE7, 16))
+        idx_magic = next(i for i, (v, n) in enumerate(t.writes) if (v, n) == (0x79E7, 16))
         # deve existir ao menos um write 0xFF antes e depois do magic
         before = any(v == 0xFF and n == 8 for v, n in t.writes[:idx_magic])
         after = any(v == 0xFF and n == 8 for v, n in t.writes[idx_magic + 1 :])

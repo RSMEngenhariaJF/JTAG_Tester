@@ -1,0 +1,63 @@
+{
+  "name": "Padrão Geral",
+  "description": "Critérios padrão para desenvolvimento e protótipos. Tolerâncias amplas.",
+  "version": "1.0",
+  "author": "",
+  "metrics": {
+    "uart_ber": {
+      "limit_max": 1e-5,
+      "description": "BER UART — máx 10^-5 (padrão industrial RS-232)"
+    },
+    "uart_rtt": {
+      "limit_max": 10.0,
+      "description": "Latência round-trip UART em ms"
+    },
+    "bit_period": {
+      "tolerance_pct": 5.0,
+      "description": "Desvio de período de bit — ±5%"
+    },
+    "pwm_freq": {
+      "tolerance_pct": 2.0,
+      "description": "Desvio de frequência PWM — ±2%"
+    },
+    "pwm_jitter": {
+      "limit_max": 3.0,
+      "description": "Jitter PWM pico-a-pico em % do período"
+    },
+    "v_3v3": {
+      "tolerance_pct": 5.0,
+      "nominal": 3.3,
+      "description": "Tensão 3.3V — tolerância ±5%"
+    },
+    "v_5v0": {
+      "tolerance_pct": 5.0,
+      "nominal": 5.0,
+      "description": "Tensão 5V — tolerância ±5%"
+    },
+    "v_supply": {
+      "tolerance_pct": 5.0,
+      "nominal": 5.0,
+      "description": "Tensão de alimentação — tolerância ±5%"
+    },
+    "ripple_3v3": {
+      "limit_max": 50.0,
+      "description": "Ripple pico-a-pico linha 3.3V em mV"
+    },
+    "ripple_5v0": {
+      "limit_max": 100.0,
+      "description": "Ripple pico-a-pico linha 5V em mV"
+    },
+    "can_rtt": {
+      "limit_max": 5.0,
+      "description": "Latência CAN round-trip em ms"
+    },
+    "i2c_latency": {
+      "limit_max": 2.0,
+      "description": "Latência I2C em ms"
+    },
+    "spi_ber": {
+      "limit_max": 1e-6,
+      "description": "BER SPI loopback"
+    }
+  }
+}

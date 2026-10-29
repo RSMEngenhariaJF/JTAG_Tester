@@ -33,6 +33,7 @@ from core.adiv5.constants import (
     DHCSR_S_REGRDY,
 )
 from core.swd.protocol import (
+    AP_ADDR_CSW,
     AP_ADDR_DRW,
     AP_ADDR_TAR,
     DP_ADDR_CTRL_STAT,
@@ -41,6 +42,9 @@ from core.swd.protocol import (
     DP_ADDR_SELECT,
     SWDProtocol,
 )
+
+# CSW: 32-bit word transfers, no auto-increment (IHI0031C §7.2.1)
+_AP_CSW_32BIT: int = 0x02
 
 
 class DebugPowerError(Exception):
@@ -70,10 +74,11 @@ class ADIv5:
 
     def init(self) -> int:
         """Inicializa a conexão de debug; retorna o valor de DPIDR."""
-        self._p.line_reset()
+        self._p.jtag_to_swd()  # comuta SWJ-DP de JTAG para SWD (STM32 liga em JTAG)
         dpidr = self._p.read_dp(DP_ADDR_DPIDR)
         self._power_up()
         self._p.write_dp(DP_ADDR_SELECT, 0x00)  # AP 0, banco 0
+        self._p.write_ap(AP_ADDR_CSW, _AP_CSW_32BIT)  # 32-bit, sem auto-incremento
         return dpidr
 
     def _power_up(self) -> None:
@@ -81,7 +86,7 @@ class ADIv5:
         self._p.write_dp(DP_ADDR_CTRL_STAT, ctrl)
         acks = CTRL_CSYSPWRUPACK | CTRL_CDBGPWRUPACK
         for _ in range(self._POWERUP_TIMEOUT):
-            if self._p.read_dp(DP_ADDR_CTRL_STAT) & acks:
+            if (self._p.read_dp(DP_ADDR_CTRL_STAT) & acks) == acks:
                 return
         raise DebugPowerError("Debug power-up não reconhecido pelo target")
 

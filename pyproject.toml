@@ -41,6 +41,7 @@ dev = [
 ]
 hardware = [
     "pyftdi>=0.55",   # FT2232H via libusb — instalar driver com Zadig (Windows)
+    "pyocd>=0.36",    # ST-Link / CMSIS-DAP via USB — sem driver adicional no Windows
 ]
 
 [project.urls]
