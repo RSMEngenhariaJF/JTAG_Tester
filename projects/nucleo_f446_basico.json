@@ -5,26 +5,57 @@
   "description": "Suite padrão com LED LD2 e botão B1 da placa Nucleo",
   "pins": {
     "led": {
-      "port": "GPIOA", "pin": 5,
+      "port": "GPIOA",
+      "pin": 5,
       "description": "LED verde LD2"
     },
     "button": {
-      "port": "GPIOC", "pin": 13,
-      "description": "Botão azul B1", "active_low": true
+      "port": "GPIOC",
+      "pin": 13,
+      "description": "Botão azul B1",
+      "active_low": true
     },
     "uart2_tx": {
-      "port": "GPIOA", "pin": 2,
+      "port": "GPIOA",
+      "pin": 2,
       "description": "USART2 TX — conector ST-Link virtual COM",
-      "peripheral": { "type": "UART", "name": "USART2", "role": "TX",
-                      "params": { "baudrate": 115200 } }
+      "peripheral": {
+        "type": "UART",
+        "name": "USART2",
+        "role": "TX",
+        "params": {
+          "baudrate": 115200
+        }
+      }
     },
     "uart2_rx": {
-      "port": "GPIOA", "pin": 3,
+      "port": "GPIOA",
+      "pin": 3,
       "description": "USART2 RX — conector ST-Link virtual COM",
-      "peripheral": { "type": "UART", "name": "USART2", "role": "RX",
-                      "params": { "baudrate": 115200 } }
+      "peripheral": {
+        "type": "UART",
+        "name": "USART2",
+        "role": "RX",
+        "params": {
+          "baudrate": 115200
+        }
+      }
     }
   },
   "test_paths": [],
-  "instruments": []
+  "instruments": [],
+  "test_plan": [
+    {
+      "test": "TESTES_PLATAFORMA/IO/piscar_led.py:PiscarLed",
+      "label": "LED LD2",
+      "params": {
+        "pinos": [
+          "led"
+        ],
+        "ciclos": 3,
+        "periodo_ms": 250,
+        "sequencial": true
+      }
+    }
+  ]
 }

@@ -4,7 +4,9 @@ Fluxo:
     1. GUI carrega configs salvas: registry.load()
     2. Usuário clica "Conectar": registry.connect("dmm")
     3. Teste chama: get_instrument("dmm") → InstrumentDriver vivo
-    4. Ao fechar: registry.disconnect_all(); registry.save()
+       ou get_oscilloscope("osc") → classe por função (core.instruments.roles)
+    4. Relatório: registry.trace_records() → identificação + calibração
+    5. Ao fechar: registry.disconnect_all(); registry.save()
 """
 
 from __future__ import annotations
@@ -13,6 +15,15 @@ import json
 import logging
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
+
+from core.instruments.traceability import (
+    CalibrationExpiredError,
+    CalibrationStatus,
+    InstrumentIdentity,
+    TraceRecord,
+    calibration_status,
+    parse_due,
+)
 
 if TYPE_CHECKING:
     from core.instruments.config import InstrumentConfig
@@ -31,6 +42,7 @@ class InstrumentRegistry:
     def __init__(self) -> None:
         self._configs:   dict[str, InstrumentConfig]  = {}
         self._drivers:   dict[str, InstrumentDriver]  = {}
+        self._identities: dict[str, InstrumentIdentity | None] = {}
         self._listeners: list[Callable[[], None]]     = []
 
     @classmethod
@@ -64,6 +76,7 @@ class InstrumentRegistry:
             except Exception:
                 pass
         self._configs.pop(name, None)
+        self._identities.pop(name, None)
         self._notify()
 
     def configs(self) -> list[InstrumentConfig]:
@@ -75,10 +88,24 @@ class InstrumentRegistry:
         config = self._configs.get(name)
         if config is None:
             raise KeyError(f"Instrumento '{name}' não configurado")
+        status = self.calibration(name)
+        if status == CalibrationStatus.EXPIRED and config.params.get("block_if_expired"):
+            raise CalibrationExpiredError(
+                f"Calibração de '{name}' vencida em {config.params.get('calibration_due')}"
+            )
         driver = _make_driver(config)
         driver.connect()
         self._drivers[name] = driver
-        logger.info("Instrumento conectado: %s @ %s", name, config.address)
+        try:
+            self._identities[name] = InstrumentIdentity.parse(driver.identify())
+        except Exception as exc:
+            logger.warning("Sem resposta a *IDN? de %s: %s", name, exc)
+            self._identities[name] = None
+        logger.info("Instrumento conectado: %s @ %s — %s", name, config.address,
+                    self._identities[name] or "identificação indisponível")
+        if status in (CalibrationStatus.EXPIRED, CalibrationStatus.DUE_SOON):
+            logger.warning("Calibração de %s: %s (%s)", name, status.value,
+                           config.params.get("calibration_due"))
         self._notify()
 
     def disconnect(self, name: str) -> None:
@@ -119,6 +146,36 @@ class InstrumentRegistry:
     def is_connected(self, name: str) -> bool:
         drv = self._drivers.get(name)
         return drv is not None and drv.is_connected
+
+    def config(self, name: str) -> InstrumentConfig | None:
+        return self._configs.get(name)
+
+    # ── Rastreabilidade ─────────────────────────────────────────────────
+
+    def identity(self, name: str) -> InstrumentIdentity | None:
+        """Identificação lida por *IDN? na última conexão (None se não houve)."""
+        return self._identities.get(name)
+
+    def calibration(self, name: str) -> CalibrationStatus:
+        config = self._configs.get(name)
+        if config is None:
+            return CalibrationStatus.UNKNOWN
+        return calibration_status(parse_due(config.params.get("calibration_due")))
+
+    def trace_records(self) -> list[TraceRecord]:
+        """Instrumentos conectados nesta sessão, para o relatório."""
+        out: list[TraceRecord] = []
+        for name in self._identities:
+            config = self._configs.get(name)
+            if config is None:
+                continue
+            due = parse_due(config.params.get("calibration_due"))
+            out.append(TraceRecord(
+                name=name, address=config.address, identity=self._identities[name],
+                asset_id=str(config.params.get("asset_id", "")),
+                calibration_due=due, status=calibration_status(due),
+            ))
+        return out
 
     # ── Persistência ────────────────────────────────────────────────────
 

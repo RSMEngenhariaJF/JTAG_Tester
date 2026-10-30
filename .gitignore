@@ -76,3 +76,9 @@ installers/build/
 *.pkg
 *.AppImage
 *.deb
+
+# Stubs de RAM: só o .bin (src/core/agent/bin) é versionado
+stubs/**/*.elf
+
+# Mapas de AF gerados do banco do STM32CubeMX (dados da ST) — gere com tools/gerar_af.py
+devices/*/af.json

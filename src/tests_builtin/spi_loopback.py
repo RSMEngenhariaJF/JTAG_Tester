@@ -23,6 +23,8 @@ class SpiLoopbackTest(BuiltinTest):
     def _run(self, pal) -> TestResult:
         cfg  = self._cfg if self._cfg is not None else get_active_board()
         scfg = cfg.spi
+        if scfg is None:
+            return self._skip(f"{cfg.name}: sem SPI de loopback configurada no BoardConfig")
 
         # Reúne os 3 pinos num único dict para salvar/restaurar
         pins = {"sck": scfg.sck, "miso": scfg.miso, "mosi": scfg.mosi}

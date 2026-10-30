@@ -1,56 +1,45 @@
 """Exemplo — IO: Leitura de pino de entrada.
 
-Verifica se o pino de botão da placa selecionada na GUI pode ser
-lido e reporta o estado atual (HIGH ou LOW).
+Verifica se o pino de botão da placa selecionada na GUI pode ser lido e
+reporta o estado atual (HIGH ou LOW). Montado como bancada modular (src/testbench):
 
-Por padrão, usa os pinos definidos no BoardConfig (btn_port / btn_pin).
-Para testar um pino diferente, substitua as constantes abaixo.
+    estímulo  Sample(1)         — uma leitura, sem acionar nada
+    monitor   GpioInputMonitor  — pino como entrada, nível elétrico (raw)
+    decisão   Report            — registra o nível (não reprova)
+
+Por padrão, usa o pino de botão do BoardConfig (btn_port / btn_pin). Para
+conferir um nível esperado, use o bloco "GPIO — Nível de entrada" no Plano de
+testes.
 """
 
-from tests_builtin.base import BuiltinTest, TestResult
-
-# ─── Modo fixo: descomente e preencha para usar pino específico ───────────────
-# PORT        = "GPIOC"
-# PIN         = 13
-# CLOCK_REG   = "AHB1ENR"
-# CLOCK_FIELD = "GPIOCEN"
-# ACTIVE_LOW  = True   # True = pressionado é nível 0 (com pull-up)
-# ─────────────────────────────────────────────────────────────────────────────
+from testbench import ComposedTest, Testbench
+from testbench.decision import Report
+from testbench.gpio import GpioInputMonitor
+from testbench.stimulus import Sample
+from tests_builtin.params import Signal
 
 
-class GpioInputTest(BuiltinTest):
+class GpioInputTest(ComposedTest):
     name        = "GPIO Input"
     description = (
         "Lê o pino de botão do BoardConfig como entrada "
         "e reporta o nível lógico atual."
     )
 
-    def _run(self, pal) -> TestResult:
-        # Modo automático: lê a placa selecionada na GUI
+    def build(self) -> Testbench:
         from core.board.config import get_active_board
-        cfg         = get_active_board()
-        port        = cfg.btn_port
-        pin         = cfg.btn_pin
-        clock_reg   = cfg.btn_clock_reg
-        clock_field = cfg.btn_clock_field
-        active_low  = cfg.btn_active_low
+        cfg = get_active_board()
+        self.btn = Signal("botao", cfg.btn_port, cfg.btn_pin, cfg.btn_active_low)
+        mon = GpioInputMonitor(self.btn, configure=True, raw=True)
 
-        pal.modify_field("RCC", clock_reg, clock_field, 1)
+        def rotulo(level: int) -> str:
+            if self.btn.active_low:
+                return "HIGH (solto)" if level else "LOW (pressionado)"
+            return "HIGH (pressionado)" if level else "LOW (solto)"
 
-        orig_moder = pal.read_field(port, "MODER", f"MODER{pin}")
-        try:
-            # Garante modo entrada (MODER = 0b00)
-            pal.modify_field(port, "MODER", f"MODER{pin}", 0b00)
-            level = bool(pal.read_field(port, "IDR", f"IDR{pin}"))
+        return Testbench(monitors=[mon], stimulus=Sample(1),
+                         decisions=[Report(mon.name, describe=rotulo,
+                                           label=f"{self.btn.port}.{self.btn.pin}")])
 
-            if active_low:
-                label = "HIGH (solto)" if level else "LOW (pressionado)"
-            else:
-                label = "HIGH (pressionado)" if level else "LOW (solto)"
-
-            return self._pass(
-                f"{port}.{pin} = {label}",
-                measured=level,
-            )
-        finally:
-            pal.modify_field(port, "MODER", f"MODER{pin}", orig_moder)
+    def summary(self, trace, verdicts) -> str:
+        return verdicts[0].message.replace("=", " = ", 1)

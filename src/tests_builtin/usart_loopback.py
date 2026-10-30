@@ -24,6 +24,8 @@ class UsartLoopbackTest(BuiltinTest):
     def _run(self, pal) -> TestResult:
         cfg   = self._cfg if self._cfg is not None else get_active_board()
         ucfg  = cfg.usart
+        if ucfg is None:
+            return self._skip(f"{cfg.name}: sem USART de loopback configurada no BoardConfig")
         tx    = ucfg.tx
         rx    = ucfg.rx
 

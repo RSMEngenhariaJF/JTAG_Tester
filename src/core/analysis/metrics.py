@@ -39,6 +39,9 @@ class Measurement:
         limit_min   — limite inferior de aprovação (None = sem limite)
         limit_max   — limite superior de aprovação (None = sem limite)
         description — descrição legível para o relatório
+        nominal     — valor esperado (para relatório e para tolerância % do perfil)
+        limit_source — de onde vieram os limites: "perfil <nome> v<versão>" ou
+                       "padrão do teste" (preenchido por MeasurementSet.add)
     """
 
     name:        str
@@ -48,6 +51,8 @@ class Measurement:
     limit_min:   float | None  = None
     limit_max:   float | None  = None
     description: str           = ""
+    nominal:     float | None  = None
+    limit_source: str          = ""
 
     # ── Estatísticas ──────────────────────────────────────────────────────
 
@@ -102,6 +107,24 @@ class Measurement:
         return ok
 
     @property
+    def margin_pct(self) -> float | None:
+        """Folga até o limite mais próximo, em % (negativa = fora do limite).
+
+        Com os dois limites: % da faixa (limit_max - limit_min) que ainda sobra
+        até a borda mais próxima. Com um só: % do valor do limite. None quando
+        não há limite ou ele é zero (ex.: BER ≤ 0).
+        """
+        lo, hi, v = self.limit_min, self.limit_max, self.value
+        if lo is not None and hi is not None:
+            band = hi - lo
+            return min(v - lo, hi - v) / band * 100 if band > 0 else None
+        if hi is not None:
+            return (hi - v) / abs(hi) * 100 if hi else None
+        if lo is not None:
+            return (v - lo) / abs(lo) * 100 if lo else None
+        return None
+
+    @property
     def status(self) -> str:
         wl = self.within_limits
         if wl is None:
@@ -133,6 +156,12 @@ class Measurement:
             d["limit_min"] = self.limit_min
         if self.limit_max is not None:
             d["limit_max"] = self.limit_max
+        if self.nominal is not None:
+            d["nominal"] = self.nominal
+        if self.limit_source:
+            d["limit_source"] = self.limit_source
+        if (margin := self.margin_pct) is not None:
+            d["margin_pct"] = round(margin, 3)
         return d
 
 
@@ -153,6 +182,8 @@ class MeasurementSet:
         self._items: list[Measurement] = []
 
     def add(self, m: Measurement) -> None:
+        """Acrescenta a medida aplicando o perfil de critérios ativo (o perfil vence)."""
+        apply_criteria(m)
         self._items.append(m)
 
     def get(self, name: str) -> Measurement | None:
@@ -186,3 +217,34 @@ class MeasurementSet:
             "measurements": [m.to_dict() for m in self._items],
             "all_pass": self.all_within_limits(),
         }
+
+
+SOURCE_DEFAULT = "padrão do teste"
+
+
+def apply_criteria(m: Measurement, cfg=None) -> Measurement:
+    """Aplica à medida os limites do perfil de critérios (ativo ou `cfg`).
+
+    O perfil vence o limite escrito no teste. A métrica do perfil casa pelo nome
+    exato ou como prefixo seguido de "_" ("uart_ber" vale para "uart_ber_9600").
+    tolerance_pct do perfil usa o nominal do perfil ou, se ausente, o da medida.
+    Sem perfil para a métrica, os limites do teste ficam, marcados como padrão.
+    """
+    if m.limit_source:
+        return m
+    if cfg is None:
+        from core.analysis.config import get_active_analysis_config
+        cfg = get_active_analysis_config()
+    match = cfg.match(m.name) if cfg is not None else None
+    if match is not None:
+        mc = match[1]
+        nominal = mc.nominal if mc.nominal is not None else m.nominal
+        lo, hi = mc.effective_limits(nominal_override=nominal)
+        if lo is not None or hi is not None:
+            m.limit_min, m.limit_max = lo, hi
+            m.nominal = nominal
+            m.limit_source = f"perfil {cfg.name} v{cfg.version}"
+            return m
+    if m.limit_min is not None or m.limit_max is not None:
+        m.limit_source = SOURCE_DEFAULT
+    return m

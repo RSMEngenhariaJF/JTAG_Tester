@@ -33,10 +33,18 @@ class FakeDevice(QObject):
     probe_connected    = Signal(str)
     probe_disconnected = Signal()
     probe_error        = Signal(str)
+    mcu_identified     = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
         self._connected = False
+        self.idcode = 0x10006421   # STM32F446 — usado por identify()
+
+    def identify(self, probe=None):
+        from core.target import McuInfo
+        info = McuInfo(0x2BA01477, 0x410FC241, "STMicroelectronics", self.idcode, 0xE0042000)
+        self.mcu_identified.emit(info)
+        return info
 
     @property
     def is_connected(self) -> bool:
@@ -98,6 +106,12 @@ class FakeRunner(QObject):
 
     def abort(self) -> None:
         self._running = False
+
+
+def _expected_suite(win) -> list:
+    """Embutidos + plano de testes do projeto ativo (mesma ordem de _run_suite)."""
+    from tests_builtin.plan import build_plan
+    return [*STANDARD_SUITE, *build_plan(win._active_project)]
 
 
 @pytest.fixture
@@ -212,7 +226,7 @@ class TestRunFlow:
         self._connect(qtbot, win, device)
         with qtbot.waitSignal(runner.suite_finished, timeout=3000):
             win._btn_run.click()
-        assert win._table.rowCount() == len(STANDARD_SUITE)
+        assert win._table.rowCount() == len(_expected_suite(win))
 
     def test_table_status_column_after_run(self, qtbot, win, device, runner) -> None:
         self._connect(qtbot, win, device)
@@ -227,14 +241,14 @@ class TestRunFlow:
         with qtbot.waitSignal(runner.suite_finished, timeout=3000):
             win._btn_run.click()
         names = [win._table.item(row, 1).text() for row in range(win._table.rowCount())]
-        assert names == [t.name for t in STANDARD_SUITE]
+        assert names == [t.name for t in _expected_suite(win)]
 
     def test_progress_bar_full_after_run(self, qtbot, win, device, runner) -> None:
         self._connect(qtbot, win, device)
         with qtbot.waitSignal(runner.suite_finished, timeout=3000):
             win._btn_run.click()
         # Progress max = numero de testes, value = pass + fail count
-        assert win._progress.maximum() == len(STANDARD_SUITE)
+        assert win._progress.maximum() == len(_expected_suite(win))
 
     def test_run_button_disabled_during_run(self, qtbot, win, device, runner) -> None:
         """FakeRunner e sincrono — estados intermediarios sao observaveis via suite_started."""
@@ -309,3 +323,123 @@ class TestNewWidgets:
 
     def test_load_plugin_button_exists(self, win) -> None:
         assert win._btn_load_plugin.isEnabled()
+
+
+# ===========================================================================
+# Identificar MCU
+# ===========================================================================
+
+
+class TestIdentifyMcu:
+    def test_identify_button_enabled_initially(self, win) -> None:
+        assert win._btn_identify.isEnabled()
+
+    def test_identify_shows_family(self, win) -> None:
+        win._btn_identify.click()
+        assert "STM32F446" in win._lbl_mcu.text()
+        assert "Cortex-M4" in win._lbl_mcu.text()
+
+    def test_identify_matches_project_board(self, win) -> None:
+        win._btn_identify.click()
+        assert "Confere" in win._lbl_mcu.text()
+
+    def test_identify_warns_on_mismatch(self, win, device) -> None:
+        device.idcode = 0x10006413   # STM32F405/407
+        win._btn_identify.click()
+        text = win._lbl_mcu.text()
+        assert "Não confere" in text
+        assert "STM32F405/F407" in text
+
+
+# ===========================================================================
+# Exportar PDF
+# ===========================================================================
+
+
+class TestExportPdf:
+    def _run_suite(self, qtbot, win, device, runner) -> None:
+        with qtbot.waitSignal(device.probe_connected, timeout=1000):
+            win._btn_connect.click()
+        with qtbot.waitSignal(runner.suite_finished, timeout=3000):
+            win._btn_run.click()
+
+    def test_disabled_without_results(self, win) -> None:
+        assert not win._btn_pdf.isEnabled()
+
+    def test_click_saves_pdf(self, qtbot, win, device, runner, tmp_path, monkeypatch) -> None:
+        import app.gui.main_window as mw
+
+        self._run_suite(qtbot, win, device, runner)
+        assert win._btn_pdf.isEnabled()
+        dest = tmp_path / "relatorio.pdf"
+        monkeypatch.setattr(mw.QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a, **k: (str(dest), "")))
+        opened: list = []
+        monkeypatch.setattr(mw.QDesktopServices, "openUrl", staticmethod(opened.append))
+        win._btn_pdf.click()
+        assert dest.read_bytes().startswith(b"%PDF")
+        assert opened and opened[0].toLocalFile().endswith("relatorio.pdf")
+
+    def test_error_shows_message(self, qtbot, win, device, runner, tmp_path,
+                                 monkeypatch) -> None:
+        import app.gui.main_window as mw
+
+        self._run_suite(qtbot, win, device, runner)
+        monkeypatch.setattr(mw.QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a, **k: (str(tmp_path / "x.pdf"), "")))
+
+        def boom(*_a, **_k):
+            raise RuntimeError("disco cheio")
+
+        monkeypatch.setattr(mw.PdfReport, "save", boom)
+        warnings: list = []
+        monkeypatch.setattr(mw.QMessageBox, "warning",
+                            staticmethod(lambda *a: warnings.append(a[2])))
+        win._btn_pdf.click()
+        assert warnings and "disco cheio" in warnings[0]
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """Preferências em .ini temporário — os testes não tocam o registro do Windows."""
+    import app.gui.main_window as mw
+    from PySide6.QtCore import QSettings
+
+    ini = str(tmp_path / "settings.ini")
+    monkeypatch.setattr(mw, "_settings", lambda: QSettings(ini, QSettings.Format.IniFormat))
+
+
+class TestSaveFolder:
+    def test_first_time_opens_documents_then_remembers(self, win, tmp_path,
+                                                       monkeypatch) -> None:
+        import app.gui.main_window as mw
+        from PySide6.QtCore import QStandardPaths
+
+        asked: list[str] = []
+        chosen = tmp_path / "relatorios" / "r.pdf"
+        chosen.parent.mkdir()
+
+        def fake(_parent, _title, start, _filters):
+            asked.append(start)
+            return str(chosen), "PDF (*.pdf)"
+
+        monkeypatch.setattr(mw.QFileDialog, "getSaveFileName", staticmethod(fake))
+        win._ask_save_path("t", "a.pdf", "PDF (*.pdf)")
+        win._ask_save_path("t", "b.pdf", "PDF (*.pdf)")
+
+        docs = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+        assert Path(asked[0]) == Path(docs) / "a.pdf"
+        assert Path(asked[1]) == chosen.parent / "b.pdf"
+
+    def test_cancel_keeps_previous_folder(self, win, tmp_path, monkeypatch) -> None:
+        import app.gui.main_window as mw
+
+        mw._settings().setValue(mw._SETTINGS_LAST_DIR, str(tmp_path))
+        monkeypatch.setattr(mw.QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a: ("", "")))
+        assert win._ask_save_path("t", "a.pdf", "PDF (*.pdf)") == ("", "")
+        assert mw._settings().value(mw._SETTINGS_LAST_DIR) == str(tmp_path)
+
+    def test_default_name_has_project_and_timestamp(self, win) -> None:
+        import re
+        assert re.fullmatch(r"relatorio_.+_\d{8}_\d{4}", win._report_default_stem())

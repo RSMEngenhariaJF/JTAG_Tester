@@ -25,6 +25,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.analysis.audit import environment_rows, test_blocks
+from core.analysis.criteria_report import (
+    criteria_rows,
+    criteria_title,
+    detail_text,
+    limits_text,
+    margin_text,
+)
+
 if TYPE_CHECKING:
     from tests_builtin.base import TestResult
 
@@ -93,6 +102,14 @@ tr:hover td{background:rgba(255,255,255,.03);}
 .limit-line{border-top:1px dashed var(--fail);margin-top:2px;font-size:.7rem;
             color:var(--fail);text-align:right;}
 
+/* Registro de auditoria */
+.kv td:first-child{color:var(--muted);width:190px;white-space:nowrap;}
+.audit h4{font-size:.8rem;color:var(--muted);text-transform:uppercase;
+          letter-spacing:.04em;margin:14px 0 4px;}
+.audit table{font-size:.8rem;} .audit td{padding:3px 8px;}
+pre.log{background:#0b1220;border:1px solid var(--border);border-radius:6px;padding:8px;
+        font-family:var(--mono);font-size:.72rem;white-space:pre-wrap;max-height:420px;
+        overflow:auto;color:#cbd5e1;}
 footer{margin-top:32px;border-top:1px solid var(--border);padding-top:12px;
        color:var(--muted);font-size:.75rem;text-align:center;}
 """
@@ -113,8 +130,52 @@ def _fmt(value: object, unit: str = "") -> str:
     return f"{value} {unit}".strip()
 
 
+_INSTR_COLS = (
+    "Nome", "Fabricante / modelo", "Nº de série", "Firmware", "Patrimônio", "Calibração",
+)
+
+
+def _instrument_rows(instruments: list[dict]) -> list[list[str]]:
+    """Linhas da tabela de rastreabilidade (uma por instrumento)."""
+    rows = []
+    for d in instruments:
+        cal = d.get("calibration", "")
+        if d.get("calibration_due"):
+            cal = f"{d['calibration_due']} ({cal})"
+        rows.append([
+            d.get("name", ""),
+            f"{d.get('manufacturer', '')} {d.get('model', '')}".strip() or "—",
+            d.get("serial", "") or "—",
+            d.get("firmware", "") or "—",
+            d.get("asset_id", "") or "—",
+            cal or "—",
+        ])
+    return rows
+
+
+def _params_text(result) -> str:
+    """Parâmetros do plano de testes usados nesta execução (rastreabilidade)."""
+    params = getattr(result, "params", None) or {}
+    return " · ".join(f"{k}: {v}" for k, v in params.items())
+
+
+def _params_html(result) -> str:
+    txt = _params_text(result)
+    return f'<br><span class="mono muted" style="font-size:.75rem">{_esc(txt)}</span>' if txt else ""
+
+
 def _esc(text: str) -> str:
     return html_lib.escape(str(text))
+
+
+def _width(block, i: int) -> str:
+    return f" style='width:{block.widths[i]}%'" if i < len(block.widths) else ""
+
+
+def _audit_cell(text: str) -> str:
+    if text in ("PASS", "FAIL", "ERROR", "SKIP", "INFO"):
+        return f'<td><span class="status s-{text}">{text}</span></td>'
+    return f'<td class="mono">{_esc(text)}</td>'
 
 
 def _sparkbar(samples: list[float], limit_max: float | None) -> str:
@@ -155,6 +216,9 @@ class HtmlReport:
         board_name:   str = "",
         operator:     str = "",
         notes:        str = "",
+        instruments:  list[dict] | None = None,
+        criteria:     dict | None = None,
+        environment:  dict | None = None,
     ) -> None:
         self.title        = title
         self.project_name = project_name
@@ -162,6 +226,9 @@ class HtmlReport:
         self.board_name   = board_name
         self.operator     = operator
         self.notes        = notes
+        self.instruments  = instruments or []   # TraceRecord.to_dict() de cada instrumento
+        self.criteria     = criteria                # criteria_report.criteria_dict(perfil)
+        self.environment  = environment or {}       # ambiente da execução (audit.environment_rows)
 
     # ── Público ──────────────────────────────────────────────────────────────
 
@@ -179,6 +246,10 @@ class HtmlReport:
         header = self._header(now, n_pass, n_fail, n_error, n_skip, yield_pct)
         table  = self._results_table(results)
         measurements = self._measurements_section(results)
+        instruments  = self._instruments_section()
+        criteria     = self._criteria_section()
+        environment  = self._environment_section()
+        audit        = self._audit_section(results)
         footer = self._footer(now)
 
         return (
@@ -186,8 +257,12 @@ class HtmlReport:
             + head
             + "<body>\n"
             + header
+            + environment
             + table
             + measurements
+            + audit
+            + criteria
+            + instruments
             + footer
             + "\n</body></html>"
         )
@@ -247,6 +322,77 @@ class HtmlReport:
             f'{fill}%</b></span>\n'
             f"{notes_html}\n"
             f"</div>\n"
+        )
+
+    def _environment_section(self) -> str:
+        rows = environment_rows(self.environment)
+        if not rows:
+            return ""
+        body = "".join(f'<tr><td>{_esc(k)}</td><td class="mono">{_esc(v)}</td></tr>\n'
+                       for k, v in rows)
+        return ("<h2>Ambiente da execução</h2>\n"
+                f'<div class="card" style="padding:0"><table class="kv">{body}</table></div>\n')
+
+    def _audit_section(self, results: list) -> str:
+        cards = [self._audit_card(r) for r in results if r.details or r.params]
+        if not cards:
+            return ""
+        return ("<h2>Registro de execução por teste</h2>\n"
+                '<p class="muted" style="margin-bottom:8px">Identificação do código, '
+                "parâmetros, decisões, passos aplicados/observados, log e exceções de cada "
+                "teste, para auditoria e rastreabilidade.</p>\n" + "".join(cards))
+
+    @staticmethod
+    def _audit_card(result) -> str:
+        status = result.status.value
+        parts = [f'<div class="card audit">\n<h3><span class="status s-{status}">{status}'
+                 f"</span> {_esc(result.name)}</h3>\n"]
+        for b in test_blocks(result):
+            parts.append(f"<h4>{_esc(b.title)}</h4>\n")
+            if b.kind == "pre":
+                parts.append(f'<pre class="log">{_esc(b.text)}</pre>\n')
+            elif b.kind == "kv":
+                parts.append('<table class="kv">' + "".join(
+                    f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in b.rows)
+                    + "</table>\n")
+            else:
+                head = "".join(f"<th{_width(b, i)}>{_esc(h)}</th>"
+                               for i, h in enumerate(b.headers))
+                body = "".join("<tr>" + "".join(_audit_cell(c) for c in row) + "</tr>"
+                               for row in b.rows)
+                parts.append(f"<table><thead><tr>{head}</tr></thead><tbody>{body}"
+                             "</tbody></table>\n")
+        parts.append("</div>\n")
+        return "".join(parts)
+
+    def _criteria_section(self) -> str:
+        rows = "".join(
+            "<tr>" + "".join(f'<td class="msg">{_esc(c)}</td>' for c in row) + "</tr>\n"
+            for row in criteria_rows(self.criteria)
+        )
+        table = (
+            '<div class="card" style="padding:0;overflow:auto">\n<table>\n'
+            "<thead><tr><th>Métrica</th><th>Critério</th><th>Descrição</th></tr></thead>\n"
+            f"<tbody>\n{rows}</tbody>\n</table>\n</div>\n"
+        ) if rows else ""
+        return (
+            "<h2>Critérios de análise</h2>\n"
+            f'<p class="muted">{_esc(criteria_title(self.criteria))}</p>\n' + table
+        )
+
+    def _instruments_section(self) -> str:
+        if not self.instruments:
+            return ""
+        head = "".join(f"<th>{h}</th>" for h in _INSTR_COLS)
+        body = "".join(
+            "<tr>" + "".join(f'<td class="msg">{_esc(c)}</td>' for c in row) + "</tr>\n"
+            for row in _instrument_rows(self.instruments)
+        )
+        return (
+            "<h2>Instrumentos utilizados</h2>\n"
+            '<div class="card" style="padding:0;overflow:auto">\n'
+            f"<table>\n<thead><tr>{head}</tr></thead>\n<tbody>\n{body}</tbody>\n</table>\n"
+            "</div>\n"
         )
 
     def _results_table(self, results: list) -> str:
@@ -310,13 +456,9 @@ class HtmlReport:
             status_cls = "m-info" if wl is None else ("m-pass" if wl else "m-fail")
             status_lbl = "INFO" if wl is None else ("PASS" if wl else "FAIL")
 
-            lim_str = ""
-            if m.limit_min is not None and m.limit_max is not None:
-                lim_str = f"[{_fmt(m.limit_min, m.unit)} … {_fmt(m.limit_max, m.unit)}]"
-            elif m.limit_min is not None:
-                lim_str = f"≥ {_fmt(m.limit_min, m.unit)}"
-            elif m.limit_max is not None:
-                lim_str = f"≤ {_fmt(m.limit_max, m.unit)}"
+            lim_str = limits_text(m, _fmt)
+            det_str = detail_text(m, _fmt)
+            mrg_str = margin_text(m)
 
             stats_html = ""
             if m.samples:
@@ -338,8 +480,11 @@ class HtmlReport:
                 f"<tr>"
                 f'<td class="mono">{_esc(m.name)}{desc}</td>'
                 f'<td class="mono"><b>{_fmt(m.value, m.unit)}</b></td>'
-                f'<td class="mono muted">{lim_str}</td>'
+                f'<td class="mono muted">{lim_str}'
+                + (f'<br><span style="font-size:.75rem">{_esc(det_str)}</span>' if det_str else "")
+                + "</td>"
                 f"{stats_html}"
+                f'<td class="mono">{mrg_str}</td>'
                 f'<td><span class="{status_cls}" style="font-weight:700;font-size:.8rem">{status_lbl}</span></td>'
                 f"</tr>\n"
             )
@@ -351,7 +496,7 @@ class HtmlReport:
             f'<table class="m-table">\n'
             f"<thead><tr>"
             f"<th>Métrica</th><th>Valor</th><th>Limites</th>"
-            f"<th>Estatísticas / Histograma</th><th>Status</th>"
+            f"<th>Estatísticas / Histograma</th><th>Margem</th><th>Status</th>"
             f"</tr></thead>\n"
             f"<tbody>{''.join(rows)}</tbody>\n"
             f"</table>\n"

@@ -7,7 +7,32 @@ Referência: CMSIS-SVD Schema 1.1 — https://open-cmsis-pack.github.io/svd-spec
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
+# Nomes de campo de GPIO que mudam entre famílias STM32 (SVDs antigos e novos):
+# F4/F7 usam MODER5/ODR5/IDR5/AFRH8; H7/G0/L4+ usam MODE5/OD5/ID5/AFSEL8.
+# O par (antigo, novo) é tentado nos dois sentidos, para os testes servirem às duas.
+_FIELD_ALIASES: tuple[tuple[str, str], ...] = (
+    (r"MODER(\d+)", r"MODE\1"),
+    (r"ODR(\d+)", r"OD\1"),
+    (r"IDR(\d+)", r"ID\1"),
+    (r"OSPEEDR(\d+)", r"OSPEED\1"),
+    (r"PUPDR(\d+)", r"PUPD\1"),
+    (r"AFR[LH](\d+)", r"AFSEL\1"),
+)
+
+
+def _field_aliases(name: str) -> list[str]:
+    """Nomes equivalentes de `name` em outras famílias (ex.: MODER5 ↔ MODE5)."""
+    out: list[str] = []
+    for old, new in _FIELD_ALIASES:
+        if m := re.fullmatch(old, name, re.IGNORECASE):
+            out.append(m.expand(new))
+        elif m := re.fullmatch(new.replace(r"\1", r"(\d+)"), name, re.IGNORECASE):
+            n = int(m.group(1))
+            out.append(old.replace(r"(\d+)", str(n)).replace("[LH]", "H" if n >= 8 else "L"))
+    return out
 
 
 @dataclass(frozen=True)
@@ -43,11 +68,12 @@ class SvdRegister:
     fields: tuple[SvdField, ...]
 
     def field(self, name: str) -> SvdField:
-        """Retorna o campo pelo nome (case-insensitive)."""
-        name_lower = name.lower()
-        for f in self.fields:
-            if f.name.lower() == name_lower:
-                return f
+        """Retorna o campo pelo nome (case-insensitive), aceitando sinônimos de GPIO."""
+        for candidate in (name, *_field_aliases(name)):
+            name_lower = candidate.lower()
+            for f in self.fields:
+                if f.name.lower() == name_lower:
+                    return f
         raise KeyError(f"Campo '{name}' não encontrado em registrador '{self.name}'")
 
 

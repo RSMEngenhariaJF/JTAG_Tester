@@ -23,10 +23,11 @@ from __future__ import annotations
 import csv
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QAction, QBrush, QColor, QFont, QKeySequence
+from PySide6.QtCore import QObject, QSettings, QStandardPaths, Qt, QUrl, Signal, Slot
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -56,8 +58,9 @@ from app.gui.about_dialog import AboutDialog
 from app.gui.analysis_config_dialog import AnalysisConfigDialog
 from app.gui.instrument_dialog import InstrumentManagerDialog
 from app.gui.project_dialog import ProjectEditorDialog
+from app.gui.test_detail import TestDetailPanel, result_name
 from core.macros.registry import MacroRegistry, _MACROS_DIR
-from app.services.device import DeviceService
+from app.services.device import PROBE_FT2232H, DeviceService, ProbeInfo
 from app.services.runner import TestRunnerService
 from core.board.config import BoardConfig, set_active_board
 from core.board.loader import find_boards
@@ -65,15 +68,21 @@ from core.instruments.registry import InstrumentRegistry
 from core.analysis.config      import (
     AnalysisConfig,
     config_path,
+    get_active_analysis_config,
     set_active_analysis_config,
 )
+from core.analysis.criteria_report import criteria_dict
 from core.analysis.report      import HtmlReport
 from core.analysis.report_docx import DocxReport
 from core.analysis.report_pdf  import PdfReport
 from core.project.config import ProjectConfig, set_active_project
 from core.project.loader import find_projects, save_project
+from core.target import STM32_DEV_IDS, McuInfo
 from tests_builtin import STANDARD_SUITE, summarize
 from tests_builtin.base import BuiltinTest, TestResult, TestStatus
+from tests_builtin.plan import build_plan
+from app.gui.log_window import LogWindow
+from app.log_buffer import get_log_buffer
 
 logger = logging.getLogger("app.gui.main_window")
 
@@ -121,6 +130,9 @@ class MainWindow(QMainWindow):
         self._pass_count:    int = 0
         self._fail_count:    int = 0
         self._last_results:  list[TestResult] = []
+        self._results_by_name: dict[str, TestResult] = {}   # último resultado de cada teste
+        self._suite_t0: datetime | None = None               # início/fim da última suíte
+        self._suite_t1: datetime | None = None
         self._plugin_tests:  list[BuiltinTest] = []
         self._active_board:  BoardConfig | None = None
         self._active_project: ProjectConfig | None = None
@@ -173,6 +185,12 @@ class MainWindow(QMainWindow):
         self._act_abort.setShortcut(QKeySequence("Escape"))
         self._act_abort.triggered.connect(self._runner.abort)
         m_exec.addAction(self._act_abort)
+
+        m_view = bar.addMenu("E&xibir")
+        act_logs = QAction("Logs...", self)
+        act_logs.setShortcut(QKeySequence("Ctrl+L"))
+        act_logs.triggered.connect(self._open_logs)
+        m_view.addAction(act_logs)
 
         m_help = bar.addMenu("A&juda")
         act_sobre = QAction("Sobre...", self)
@@ -290,10 +308,26 @@ class MainWindow(QMainWindow):
         self._lbl_probe.setStyleSheet("color: gray; font-size: 11px;")
         lay.addWidget(self._lbl_probe)
 
+        btn_row = QHBoxLayout()
+        self._btn_identify = QPushButton("Identificar MCU")
+        self._btn_identify.setMinimumHeight(32)
+        self._btn_identify.setToolTip(
+            "Lê os registradores de ID do microcontrolador ligado ao probe (sem halt)"
+        )
+        self._btn_identify.clicked.connect(self._identify_mcu)
+        btn_row.addWidget(self._btn_identify)
+
         self._btn_connect = QPushButton("Conectar")
         self._btn_connect.setMinimumHeight(32)
         self._btn_connect.clicked.connect(self._toggle_connect)
-        lay.addWidget(self._btn_connect)
+        btn_row.addWidget(self._btn_connect)
+        lay.addLayout(btn_row)
+
+        self._lbl_mcu = QLabel("MCU: não identificado")
+        self._lbl_mcu.setWordWrap(True)
+        self._lbl_mcu.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._lbl_mcu.setStyleSheet("color: gray; font-size: 11px;")
+        lay.addWidget(self._lbl_mcu)
 
         lay.addStretch()
         return widget
@@ -325,21 +359,32 @@ class MainWindow(QMainWindow):
         lay.setSpacing(6)
 
         # Testes do projeto
-        lay.addWidget(self._section_header("Testes do projeto"))
+        lay.addWidget(self._section_header("Plano e testes do projeto"))
 
         self._project_tests_list = QListWidget()
         self._project_tests_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._project_tests_list.setMaximumHeight(110)
+        self._project_tests_list.setMaximumHeight(160)
         self._project_tests_list.setToolTip(
-            "Arquivos de teste associados ao projeto selecionado.\n"
-            "Execute via: pytest <arquivo>"
+            "▶ = instância do plano de testes (roda com Executar Suite)\n"
+            "Demais = arquivos pytest associados ao projeto.\n"
+            "Clique: detalhes no painel abaixo dos resultados. Clique duplo: editar o plano."
         )
+        self._project_tests_list.currentRowChanged.connect(self._show_plan_detail)
+        self._project_tests_list.itemDoubleClicked.connect(lambda _i: self._edit_plan())
         lay.addWidget(self._project_tests_list)
 
         self._lbl_no_tests = QLabel("Nenhum teste configurado no projeto.")
         self._lbl_no_tests.setStyleSheet("color: #888; font-size: 11px;")
         self._lbl_no_tests.setVisible(True)
         lay.addWidget(self._lbl_no_tests)
+
+        self._btn_edit_plan = QPushButton("Editar plano de testes...")
+        self._btn_edit_plan.setToolTip(
+            "Escolhe os testes parametrizáveis do projeto e em quais pinos/valores\n"
+            "cada um é aplicado (ex.: Piscar LED nos LEDs indicadores)."
+        )
+        self._btn_edit_plan.clicked.connect(lambda: self._edit_plan())
+        lay.addWidget(self._btn_edit_plan)
 
         lay.addWidget(self._separator())
 
@@ -422,7 +467,17 @@ class MainWindow(QMainWindow):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(False)
-        lay.addWidget(self._table, stretch=1)
+        self._table.itemSelectionChanged.connect(self._show_result_detail)
+
+        # Resultados em cima, detalhes do teste selecionado embaixo
+        self._detail = TestDetailPanel()
+        self._results_split = QSplitter(Qt.Orientation.Vertical)
+        self._results_split.setChildrenCollapsible(False)
+        self._results_split.addWidget(self._table)
+        self._results_split.addWidget(self._detail)
+        self._results_split.setStretchFactor(0, 3)
+        self._results_split.setStretchFactor(1, 2)
+        lay.addWidget(self._results_split, stretch=1)
 
         self._progress = QProgressBar()
         self._progress.setValue(0)
@@ -442,6 +497,13 @@ class MainWindow(QMainWindow):
         report_menu.addAction("PDF (.pdf)…",    self._generate_pdf_report)
         self._btn_report.setMenu(report_menu)
         btn_row.addWidget(self._btn_report)
+
+        self._btn_pdf = QPushButton("Exportar PDF")
+        self._btn_pdf.setMinimumHeight(36)
+        self._btn_pdf.setEnabled(False)
+        self._btn_pdf.setToolTip("Salva o relatório da última execução em PDF (A4)")
+        self._btn_pdf.clicked.connect(self._generate_pdf_report)
+        btn_row.addWidget(self._btn_pdf)
 
         self._btn_export = QPushButton("Exportar...")
         self._btn_export.setMinimumHeight(36)
@@ -480,6 +542,21 @@ class MainWindow(QMainWindow):
         self._sb_suite.setMinimumWidth(180)
         bar.addPermanentWidget(self._sb_suite)
 
+        self._sb_logs = QPushButton("Logs")
+        self._sb_logs.setFlat(True)
+        self._sb_logs.setToolTip("Abrir a janela de logs (Ctrl+L)")
+        self._sb_logs.clicked.connect(self._open_logs)
+        bar.addPermanentWidget(self._sb_logs)
+
+        # Registros chegam de qualquer thread: o sinal leva a contagem para a GUI
+        self._log_window: LogWindow | None = None
+        self._log_bridge = _LogCountBridge(self)
+        self._log_bridge.changed.connect(self._update_log_counter,
+                                         Qt.ConnectionType.QueuedConnection)
+        self._log_listener = lambda _entry: self._log_bridge.changed.emit()
+        get_log_buffer().add_listener(self._log_listener)
+        self._update_log_counter()
+
     # ------------------------------------------------------------------
     # Conexão de sinais
     # ------------------------------------------------------------------
@@ -488,6 +565,7 @@ class MainWindow(QMainWindow):
         self._device.probe_connected.connect(self._on_probe_connected)
         self._device.probe_disconnected.connect(self._on_probe_disconnected)
         self._device.probe_error.connect(self._on_probe_error)
+        self._device.mcu_identified.connect(self._on_mcu_identified)
 
         self._runner.suite_started.connect(self._on_suite_started)
         self._runner.test_started.connect(self._on_test_started)
@@ -498,7 +576,7 @@ class MainWindow(QMainWindow):
     # Inicialização de projetos
     # ------------------------------------------------------------------
 
-    def _load_projects(self) -> None:
+    def _load_projects(self, select_code: str | None = None) -> None:
         """Carrega projetos da pasta projects/ e popula o ComboBox."""
         # Indexa por nome normalizado (minúsculas, hífen→sublinhado)
         # para tolerância a diferenças de capitalização nos JSONs
@@ -519,8 +597,10 @@ class MainWindow(QMainWindow):
         self._combo_projects.blockSignals(False)
 
         if projects:
-            self._combo_projects.setCurrentIndex(0)
-            self._on_project_changed(0)
+            idx = next((i for i, p in enumerate(projects)
+                        if select_code and p.project_code == select_code), 0)
+            self._combo_projects.setCurrentIndex(idx)
+            self._on_project_changed(idx)
 
         self._btn_edit_project.setEnabled(bool(projects))
 
@@ -599,7 +679,31 @@ class MainWindow(QMainWindow):
         self._lbl_probe.setStyleSheet("color: red; font-size: 11px;")
         self._sb_probe.setText("Probe: ERRO")
         self.statusBar().showMessage(f"Erro: {message}", 5000)
+        if self._lbl_mcu.text() == "MCU: identificando...":
+            self._lbl_mcu.setText("MCU: não identificado")
         self._refresh_button_states()
+
+    @Slot(object)
+    def _on_mcu_identified(self, info: McuInfo) -> None:
+        logger.info("MCU identificado: %s", info.summary().replace("\n", " | "))
+        text = info.summary()
+        style = "color: green; font-size: 11px;"
+        board = self._active_board
+        if board is not None and info.dev_id is not None:
+            if info.dev_id != board.expected_dev_id:
+                expected = STM32_DEV_IDS.get(board.expected_dev_id, "?")
+                text += (
+                    f"\n⚠ Não confere com a placa do projeto ({board.name}): "
+                    f"esperado DEV_ID 0x{board.expected_dev_id:03X} ({expected})"
+                )
+                style = "color: #b35900; font-weight: bold; font-size: 11px;"
+            else:
+                text += f"\n✓ Confere com a placa do projeto ({board.name})"
+        elif info.dev_id is None:
+            text += "\nDEV_ID não lido (chip fora da tabela STM32)"
+        self._lbl_mcu.setText(text)
+        self._lbl_mcu.setStyleSheet(style)
+        self.statusBar().showMessage(f"MCU identificado: {info.name}", 5000)
 
     # ------------------------------------------------------------------
     # Handlers da suite
@@ -610,7 +714,10 @@ class MainWindow(QMainWindow):
         self._total_tests = total
         self._pass_count  = 0
         self._fail_count  = 0
+        self._suite_t0 = datetime.now().astimezone()
+        self._suite_t1 = None
         self._table.setRowCount(0)
+        self._results_by_name.clear()
         self._progress.setMaximum(total)
         self._progress.setValue(0)
         self._sb_suite.setText(f"Suite: executando {total} testes...")
@@ -640,6 +747,20 @@ class MainWindow(QMainWindow):
         self._table.item(row, _COL_STATUS).setText(_STATUS_LABEL[result.status])
         self._table.item(row, _COL_MS).setText(f"{result.duration_ms:.1f}")
         self._table.item(row, _COL_MESSAGE).setText(result.message)
+        tip = _measurements_tooltip(result)
+        for col in range(len(_COL_HEADERS)):
+            item = self._table.item(row, col)
+            if item and tip:
+                item.setToolTip(tip)
+        self._table.item(row, _COL_NAME).setData(Qt.ItemDataRole.UserRole, result)
+        self._results_by_name[result.name] = result
+        if self._detail.current == result.name:          # painel aberto neste teste
+            self._refresh_detail(result.name)
+
+        if result.status in (TestStatus.FAIL, TestStatus.ERROR):
+            log = logger.error if result.status == TestStatus.ERROR else logger.warning
+            extra = f"  params={result.params}" if result.params else ""
+            log("Teste %s: %s — %s%s", result.status.value, result.name, result.message, extra)
 
         if result.status == TestStatus.PASS:
             self._pass_count += 1
@@ -651,6 +772,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_suite_finished(self, results: list[TestResult]) -> None:
         self._last_results = results
+        self._suite_t1 = datetime.now().astimezone()
         counts  = summarize(results)
         n_pass  = counts[TestStatus.PASS]
         n_fail  = counts[TestStatus.FAIL]
@@ -687,7 +809,7 @@ class MainWindow(QMainWindow):
         probes = self._device.list_probes()
         self._combo_probes.clear()
         for p in probes:
-            self._combo_probes.addItem(str(p), userData=p.unique_id)
+            self._combo_probes.addItem(str(p), userData=p)
         if not probes:
             self.statusBar().showMessage("Nenhum probe detectado.", 3000)
         else:
@@ -702,15 +824,33 @@ class MainWindow(QMainWindow):
             if self._active_board is None:
                 self.statusBar().showMessage("Selecione uma placa antes de conectar.", 4000)
                 return
-            uid = self._combo_probes.currentData()
+            probe: ProbeInfo | None = self._combo_probes.currentData()
+            if probe is not None and probe.kind == PROBE_FT2232H:
+                self.statusBar().showMessage(
+                    "Conexão completa via FT2232H ainda não suportada — "
+                    "use 'Identificar MCU'.", 6000
+                )
+                return
             self.statusBar().showMessage("Conectando ao probe...", 0)
             self._btn_connect.setEnabled(False)
-            self._device.connect(board=self._active_board, uid=uid)
+            self._device.connect(
+                board=self._active_board,
+                uid=probe.unique_id if probe else None,
+            )
+
+    def _identify_mcu(self) -> None:
+        probe: ProbeInfo | None = self._combo_probes.currentData()
+        self.statusBar().showMessage("Identificando MCU...", 0)
+        self._lbl_mcu.setText("MCU: identificando...")
+        self._lbl_mcu.setStyleSheet("color: gray; font-size: 11px;")
+        self._device.identify(probe)
 
     def _run_suite(self) -> None:
         if self._runner.is_running:
             return
-        suite = STANDARD_SUITE + tuple(self._plugin_tests)
+        # Ordem: embutidos → plano de testes do projeto → plugins carregados à mão
+        plan = tuple(build_plan(self._active_project))
+        suite = STANDARD_SUITE + plan + tuple(self._plugin_tests)
         try:
             self._runner.run(suite)
         except RuntimeError as exc:
@@ -725,6 +865,9 @@ class MainWindow(QMainWindow):
         try:
             from tests_builtin.loader import PluginLoader
             tests = PluginLoader.load_from_file(Path(path))
+            configurable = [t for t in tests if t.params]
+            if configurable and self._offer_plan(path, configurable):
+                tests = [t for t in tests if not t.params]
             self._plugin_tests.extend(tests)
             for t in tests:
                 item = QListWidgetItem(t.name)
@@ -741,18 +884,97 @@ class MainWindow(QMainWindow):
         if dlg.exec() == ProjectEditorDialog.DialogCode.Accepted:
             self._load_projects()
 
+    def _offer_plan(self, path: str, tests: list[BuiltinTest]) -> bool:
+        """Teste com parâmetros precisa de pinos/valores: propõe o plano do projeto."""
+        from tests_builtin.plan import make_ref
+
+        if self._active_project is None:
+            QMessageBox.information(
+                self, "Teste configurável",
+                "Este arquivo tem testes com parâmetros (pinos, valores).\n"
+                "Selecione um projeto para adicioná-los ao plano de testes."
+            )
+            return False
+        names = ", ".join(t.name for t in tests)
+        answer = QMessageBox.question(
+            self, "Teste configurável",
+            f"{names} tem parâmetros (pinos, ciclos...).\n\n"
+            f"Adicionar ao plano de testes do projeto "
+            f"\"{self._active_project.name}\" e escolher os pinos agora?"
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self._edit_plan([make_ref(path, type(t).__name__) for t in tests])
+        return True
+
+    def _edit_plan(self, add_refs: list[str] | tuple[str, ...] = ()) -> None:
+        """Abre o editor do projeto ativo direto na aba "Plano de testes"."""
+        project: ProjectConfig | None = self._combo_projects.currentData()
+        if project is None:
+            self.statusBar().showMessage("Selecione ou crie um projeto primeiro.", 4000)
+            return
+        dlg = ProjectEditorDialog(self, project=project)
+        dlg.open_plan(add_refs)
+        if dlg.exec() == ProjectEditorDialog.DialogCode.Accepted:
+            self._load_projects(select_code=project.project_code)
+
     def _edit_project(self) -> None:
         project: ProjectConfig | None = self._combo_projects.currentData()
         if project is None:
             return
         dlg = ProjectEditorDialog(self, project=project)
         if dlg.exec() == ProjectEditorDialog.DialogCode.Accepted:
-            self._load_projects()
+            self._load_projects(select_code=project.project_code)
+
+    # ── Painel de detalhes do teste ───────────────────────────────────────
+
+    def _plan_entry_for(self, name: str):
+        """Entrada do plano cujo resultado se chama `name` (None se não for do plano)."""
+        project = self._active_project
+        if project is None:
+            return None
+        return next((e for e in project.test_plan if result_name(e) == name), None)
+
+    def _show_plan_detail(self, row: int) -> None:
+        project = self._active_project
+        if project is None or not 0 <= row < len(project.test_plan):
+            return                                   # linha de arquivo pytest: sem detalhes
+        entry = project.test_plan[row]
+        self._detail.show_entry(entry, project, self._results_by_name.get(result_name(entry)))
+
+    def _show_result_detail(self) -> None:
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        item = self._table.item(rows[0].row(), _COL_NAME)
+        result = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if result is not None:
+            self._refresh_detail(result.name, result)
+
+    def _refresh_detail(self, name: str, result: TestResult | None = None) -> None:
+        result = result or self._results_by_name.get(name)
+        entry = self._plan_entry_for(name)
+        if entry is not None:
+            self._detail.show_entry(entry, self._active_project, result)
+        elif result is not None:
+            self._detail.show_result(result)
 
     def _refresh_project_tests(self) -> None:
         project = self._active_project
+        self._detail.clear()
         self._project_tests_list.clear()
-        if project and project.test_paths:
+        if project and (project.test_paths or project.test_plan):
+            for entry in project.test_plan:
+                params = ", ".join(
+                    f"{k}={'+'.join(v) if isinstance(v, list) else v}"
+                    for k, v in entry.params.items()
+                )
+                reps = f"  x{entry.repeat}" if entry.repeat > 1 else ""
+                item = QListWidgetItem(
+                    f"{'▶' if entry.enabled else '⏸'} {entry.label or entry.test}{reps}"
+                )
+                item.setToolTip(f"{entry.test}\n{params}")
+                self._project_tests_list.addItem(item)
             for path in project.test_paths:
                 self._project_tests_list.addItem(path)
             self._lbl_no_tests.setVisible(False)
@@ -892,13 +1114,53 @@ class MainWindow(QMainWindow):
                 label += f"  —  {cfg.description}"
             self._instruments_list.addItem(label)
 
+    def _open_logs(self) -> None:
+        if self._log_window is not None and self._log_window.isVisible():
+            self._log_window.raise_()
+            self._log_window.activateWindow()
+            return
+        self._log_window = LogWindow(self, context_provider=self._log_context,
+                                     save_path_provider=self._ask_save_path)
+        self._log_window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._log_window.destroyed.connect(lambda *_: setattr(self, "_log_window", None))
+        self._log_window.show()
+
+    def _update_log_counter(self) -> None:
+        buf = get_log_buffer()
+        erros, avisos = buf.count("ERROR"), buf.count("WARNING") - buf.count("ERROR")
+        if erros:
+            self._sb_logs.setText(f"⚠ Logs: {erros} erro(s)")
+            self._sb_logs.setStyleSheet("color: #C00000; font-weight: bold;")
+        elif avisos:
+            self._sb_logs.setText(f"Logs: {avisos} aviso(s)")
+            self._sb_logs.setStyleSheet("color: #B35900;")
+        else:
+            self._sb_logs.setText("Logs")
+            self._sb_logs.setStyleSheet("")
+
+    def _log_context(self) -> dict:
+        """Contexto da sessão gravado no topo dos logs exportados."""
+        import platform
+
+        proj, board = self._active_project, self._active_board
+        crit = get_active_analysis_config()
+        return {
+            "app_version": __version__,
+            "python": platform.python_version(),
+            "os": f"{platform.system()} {platform.release()}",
+            "project": f"{proj.project_code} — {proj.name}" if proj else "",
+            "board": board.name if board else "",
+            "probe": self._sb_probe.text().removeprefix("Probe: "),
+            "criteria": f"{crit.name} v{crit.version}" if crit else "",
+            "suite": self._sb_suite.text().removeprefix("Suite: "),
+        }
+
     def _export_results(self) -> None:
         if not self._last_results:
             return
-        path, selected_filter = QFileDialog.getSaveFileName(
-            self,
+        path, selected_filter = self._ask_save_path(
             "Exportar resultados",
-            "resultados",
+            f"resultados_{self._report_default_stem().removeprefix('relatorio_')}",
             "JSON (*.json);;CSV (*.csv)",
         )
         if not path:
@@ -923,20 +1185,76 @@ class MainWindow(QMainWindow):
             project_name = proj.name         if proj else "",
             project_code = proj.project_code if proj else "",
             board_name   = board.name        if board else "",
+            instruments  = _instrument_trace(),
+            criteria     = criteria_dict(get_active_analysis_config()),
+            environment  = self._report_environment(),
         )
+
+    def _report_environment(self) -> dict:
+        """Ambiente da execução para auditoria (sem dados pessoais: sem usuário/máquina)."""
+        import hashlib
+        import platform
+
+        proj, board = self._active_project, self._active_board
+        env: dict = {"software": f"JTAG Tester v{__version__}",
+                     "python": platform.python_version()}
+        try:
+            import pyocd
+            env["pyocd"] = pyocd.__version__
+        except Exception:
+            pass
+        probe = self._lbl_probe.text()
+        if probe and probe != "nao conectado":
+            env["sonda"] = probe
+        mcu = self._lbl_mcu.text().removeprefix("MCU: ")
+        if mcu and "não identificado" not in mcu:
+            env["mcu"] = mcu
+        if board:
+            env["placa"] = f"{board.name} (alvo {board.pyocd_target or board.target}, "\
+                           f"conexão {board.connect_mode})"
+        if proj:
+            env["projeto"] = f"{proj.name} ({proj.project_code})"
+            blob = json.dumps(proj.to_dict(), sort_keys=True, ensure_ascii=False)
+            env["projeto_sha256"] = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16] + \
+                " (configuração usada: pinos, plano, clocks)"
+        cfg = get_active_analysis_config()
+        env["perfil"] = f"{cfg.name} v{cfg.version}" if cfg else "nenhum (limites dos testes)"
+        if self._suite_t0:
+            env["inicio"] = self._suite_t0.isoformat(timespec="seconds")
+        if self._suite_t1:
+            env["fim"] = self._suite_t1.isoformat(timespec="seconds")
+            if self._suite_t0:
+                env["duracao"] = f"{(self._suite_t1 - self._suite_t0).total_seconds():.1f} s"
+        if self._last_results:
+            env["testes"] = str(len(self._last_results))
+        return env
 
     def _report_default_stem(self) -> str:
         proj = self._active_project
-        code = proj.project_code if proj else "relatorio"
-        return f"relatorio_{code}"
+        code = proj.project_code if proj else "sem_projeto"
+        return f"relatorio_{code}_{datetime.now():%Y%m%d_%H%M}"
+
+    def _ask_save_path(self, title: str, filename: str, filters: str) -> tuple[str, str]:
+        """Diálogo de salvar que abre na última pasta usada (ou em Documentos)."""
+        settings = _settings()
+        start_dir = str(settings.value(_SETTINGS_LAST_DIR, "") or "")
+        if not start_dir or not Path(start_dir).is_dir():
+            start_dir = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.DocumentsLocation
+            )
+        path, selected = QFileDialog.getSaveFileName(
+            self, title, str(Path(start_dir) / filename), filters
+        )
+        if path:
+            settings.setValue(_SETTINGS_LAST_DIR, str(Path(path).parent))
+        return path, selected
 
     # ── Handlers de relatório ────────────────────────────────────────────────
 
     def _generate_html_report(self) -> None:
         if not self._last_results:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self,
+        path, _ = self._ask_save_path(
             "Salvar Relatório HTML",
             f"{self._report_default_stem()}.html",
             "HTML (*.html)",
@@ -956,8 +1274,7 @@ class MainWindow(QMainWindow):
     def _generate_docx_report(self) -> None:
         if not self._last_results:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self,
+        path, _ = self._ask_save_path(
             "Salvar Relatório Word",
             f"{self._report_default_stem()}.docx",
             "Word (*.docx)",
@@ -977,8 +1294,7 @@ class MainWindow(QMainWindow):
     def _generate_pdf_report(self) -> None:
         if not self._last_results:
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self,
+        path, _ = self._ask_save_path(
             "Salvar Relatório PDF",
             f"{self._report_default_stem()}.pdf",
             "PDF (*.pdf)",
@@ -989,11 +1305,12 @@ class MainWindow(QMainWindow):
             saved = PdfReport(**self._report_kwargs()).save(
                 Path(path), self._last_results
             )
-            self.statusBar().showMessage(f"Relatório PDF salvo: {saved.name}", 5000)
-            import os
-            os.startfile(str(saved))
         except Exception as exc:
-            self.statusBar().showMessage(f"Erro ao gerar relatório PDF: {exc}", 6000)
+            logger.exception("Falha ao gerar relatório PDF")
+            QMessageBox.warning(self, "Exportar PDF", f"Não foi possível gerar o PDF:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Relatório PDF salvo: {saved.name}", 5000)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(saved)))
 
     def _export_json(self, dest: Path) -> None:
         proj  = self._active_project
@@ -1002,6 +1319,8 @@ class MainWindow(QMainWindow):
             "project_code": proj.project_code if proj else "—",
             "project_name": proj.name         if proj else "—",
             "board":        board.name        if board else "—",
+            "instruments":  _instrument_trace(),
+            "criteria":     criteria_dict(get_active_analysis_config()),
             "results": [r.to_dict() for r in self._last_results],
         }
         dest.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1036,11 +1355,13 @@ class MainWindow(QMainWindow):
 
         self._combo_projects.setEnabled(not connected and not running)
         self._btn_connect.setEnabled(has_board and not running)
+        self._btn_identify.setEnabled(not running)
         self._btn_refresh.setEnabled(not running and not connected)
         self._btn_run.setEnabled(connected and not running)
         self._btn_abort.setEnabled(running)
         self._btn_export.setEnabled(has_results and not running)
         self._btn_report.setEnabled(has_results and not running)
+        self._btn_pdf.setEnabled(has_results and not running)
         self._act_run.setEnabled(connected and not running)
         self._act_abort.setEnabled(running)
         self._act_export.setEnabled(has_results and not running)
@@ -1076,7 +1397,44 @@ class MainWindow(QMainWindow):
         registry = InstrumentRegistry.instance()
         registry.disconnect_all()
         registry.save()
+        get_log_buffer().remove_listener(self._log_listener)
         super().closeEvent(event)
+
+
+_SETTINGS_LAST_DIR = "export/last_dir"
+
+
+class _LogCountBridge(QObject):
+    changed = Signal()
+
+
+def _settings() -> QSettings:
+    """Preferências do usuário (pasta da última exportação etc.)."""
+    return QSettings("JTAG_Tester", "Bring-up Platform")
+
+
+def _measurements_tooltip(result: TestResult) -> str:
+    """Valor, limites, origem do limite e margem de cada medida (dica da linha)."""
+    ms = getattr(result, "measurements", None)
+    if not ms:
+        return ""
+    from core.analysis.criteria_report import detail_text, limits_text, margin_text
+    from core.analysis.report import _fmt
+
+    lines = []
+    for m in ms:
+        line = f"{m.status}  {m.name} = {_fmt(m.value, m.unit)}"
+        if lim := limits_text(m, _fmt):
+            line += f"   limite {lim}   margem {margin_text(m)}"
+        if det := detail_text(m, _fmt):
+            line += f"\n      {det}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _instrument_trace() -> list[dict]:
+    """Identificação e calibração dos instrumentos conectados na sessão."""
+    return [rec.to_dict() for rec in InstrumentRegistry.instance().trace_records()]
 
 
 def _board_key(name: str) -> str:

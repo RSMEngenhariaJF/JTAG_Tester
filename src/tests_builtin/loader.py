@@ -31,6 +31,11 @@ class PluginLoader:
     """Carrega testes customizados de módulos Python externos."""
 
     @staticmethod
+    def load_classes(path: Path | str) -> list[type[BuiltinTest]]:
+        """Como load_from_file, mas devolve as classes (para instanciar com parâmetros)."""
+        return [type(t) for t in PluginLoader.load_from_file(path)]
+
+    @staticmethod
     def load_from_file(path: Path | str) -> list[BuiltinTest]:
         """Importa ``path`` e retorna instâncias de todas as subclasses de BuiltinTest."""
         path = Path(path).resolve()
@@ -58,6 +63,9 @@ class PluginLoader:
                 and issubclass(obj, BuiltinTest)
                 and obj is not BuiltinTest
                 and not getattr(obj, "__abstractmethods__", None)
+                # só as classes definidas neste arquivo: um bloco importado para
+                # herança (class Meu(PullCurto)) não é registrado de novo
+                and obj.__module__ == mod.__name__
             ):
                 tests.append(obj())
 

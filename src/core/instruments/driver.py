@@ -62,6 +62,14 @@ class InstrumentDriver(ABC):
         """Lê uma resposta sem enviar comando."""
         raise NotImplementedError(f"{type(self).__name__} não implementa read()")
 
+    def query_raw(self, cmd: str, timeout_ms: int | None = None) -> bytes:
+        """Envia um comando e retorna a resposta binária completa (ex.: bloco #9...)."""
+        raise NotImplementedError(f"{type(self).__name__} não implementa query_raw()")
+
+    def identify(self) -> str:
+        """Resposta de *IDN? — usada para rastreabilidade ao conectar."""
+        return self.query("*IDN?")
+
     # ── Context manager ─────────────────────────────────────────────────
 
     def __enter__(self) -> InstrumentDriver:

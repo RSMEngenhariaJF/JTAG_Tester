@@ -37,6 +37,8 @@ from core.project.config import (
     PinDef,
     ProjectConfig,
 )
+from app.gui.test_plan_editor import TestPlanEditor
+from core.project.ioc import parse_ioc
 from core.project.loader import save_project
 
 logger = logging.getLogger("app.gui.project_dialog")
@@ -59,6 +61,7 @@ class ProjectEditorDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._original = project
+        self._clocks: dict = dict(project.clocks) if project else {}
         self.setWindowTitle("Editar Projeto" if project else "Novo Projeto")
         self.setMinimumSize(820, 540)
         self.resize(920, 600)
@@ -96,8 +99,15 @@ class ProjectEditorDialog(QDialog):
 
         # ── Abas de detalhes ─────────────────────────────────────────────
         tabs = QTabWidget()
+        self._tabs = tabs
         tabs.addTab(self._build_pins_tab(),   "Pinout")
+        self._plan_editor = TestPlanEditor(lambda: self._pin_table.pins())
+        tabs.addTab(self._plan_editor,        "Plano de testes")
         tabs.addTab(self._build_tests_tab(),  "Testes")
+        # O formulário do plano lista os sinais do Pinout: refaz ao entrar na aba
+        tabs.currentChanged.connect(
+            lambda i: self._plan_editor.refresh() if tabs.widget(i) is self._plan_editor else None
+        )
         tabs.addTab(self._build_instrs_tab(), "Instrumentos")
         lay.addWidget(tabs, stretch=1)
 
@@ -139,6 +149,15 @@ class ProjectEditorDialog(QDialog):
         btn_row.addWidget(btn_rem)
 
         btn_row.addStretch(1)
+
+        btn_ioc_import = QPushButton("Importar .ioc...")
+        btn_ioc_import.setToolTip(
+            "Importa o pinout de um projeto STM32CubeMX (.ioc).\n"
+            "Usa os rótulos (GPIO_Label) como nome do sinal e seleciona a placa\n"
+            "cujo alvo corresponde ao MCU do arquivo, se houver."
+        )
+        btn_ioc_import.clicked.connect(self._import_ioc)
+        btn_row.addWidget(btn_ioc_import)
 
         btn_csv_import = QPushButton("Importar CSV...")
         btn_csv_import.setToolTip(
@@ -246,20 +265,75 @@ class ProjectEditorDialog(QDialog):
                 "Isso substituirá todos os pinos atuais da tabela.",
             )
             if answer == QMessageBox.StandardButton.Yes:
-                self._pin_table.clear_rows()
-                for sig, pd in pins.items():
-                    self._pin_table.add_row(
-                        signal      = sig,
-                        port        = pd.port,
-                        pin         = pd.pin,
-                        periph_type = pd.peripheral.periph_type,
-                        periph_name = pd.peripheral.name,
-                        periph_role = pd.peripheral.role,
-                        desc        = pd.description,
-                        active_low  = pd.active_low,
-                    )
+                self._replace_pins(pins)
         except Exception as exc:
             QMessageBox.warning(self, "Erro ao importar CSV", str(exc))
+
+    def _replace_pins(self, pins: dict[str, PinDef]) -> None:
+        self._pin_table.clear_rows()
+        for sig, pd in pins.items():
+            self._pin_table.add_row(
+                signal      = sig,
+                port        = pd.port,
+                pin         = pd.pin,
+                periph_type = pd.peripheral.periph_type,
+                periph_name = pd.peripheral.name,
+                periph_role = pd.peripheral.role,
+                desc        = pd.description,
+                active_low  = pd.active_low,
+            )
+
+    # ── STM32CubeMX (.ioc) ────────────────────────────────────────────────
+
+    def _import_ioc(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Importar pinout do STM32CubeMX", "",
+            "STM32CubeMX (*.ioc);;Todos os arquivos (*)"
+        )
+        if not path:
+            return
+        try:
+            ioc = parse_ioc(Path(path).read_text(encoding="utf-8", errors="replace"))
+        except Exception as exc:
+            QMessageBox.warning(self, "Erro ao importar .ioc", str(exc))
+            return
+        if not ioc.pins:
+            QMessageBox.warning(self, ".ioc sem pinos", "Nenhum pino configurado no arquivo.")
+            return
+
+        board = ioc.match_board(self._boards)
+        lines = [
+            f"MCU: {ioc.cpn or ioc.user_name}  {ioc.package}",
+            f"{len(ioc.pins)} pino(s) — substituirá todos os pinos atuais da tabela.",
+        ]
+        if board is not None:
+            lines.append(f"Placa base: {board.name} (selecionada automaticamente)")
+        else:
+            lines.append(
+                f"⚠ Nenhuma placa cadastrada para '{ioc.user_name}'. "
+                "O projeto ficará com a placa base selecionada no formulário."
+            )
+        if ioc.skipped:
+            lines.append("Ignorados (debug/oscilador): " + ", ".join(ioc.skipped))
+        if "SYSCLK" in ioc.clocks:
+            lines.append(f"Clock esperado: SYSCLK {ioc.clocks['SYSCLK'] / 1e6:g} MHz "
+                         f"({ioc.clocks.get('fonte', '?')}), {len(ioc.clocks)} valor(es)")
+        answer = QMessageBox.question(
+            self, "Importar .ioc", "\n".join(lines) + "\n\nImportar?"
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._replace_pins(ioc.pins)
+        if ioc.clocks:
+            self._clocks = dict(ioc.clocks)      # clock esperado do produto
+        if board is not None:
+            self._board_combo.setCurrentIndex(self._board_combo.findData(board.name))
+        if not self._name.text().strip() and ioc.project_name:
+            self._name.setText(ioc.project_name)
+        if not self._desc.text().strip():
+            self._desc.setText(f"Pinout importado de {Path(path).name} ({ioc.cpn or ioc.user_name})")
+        logger.info("Pinout importado de %s: %d pino(s)", path, len(ioc.pins))
 
     def _export_csv(self) -> None:
         pins = self._pin_table.pins()
@@ -315,9 +389,15 @@ class ProjectEditorDialog(QDialog):
         self._code.setText(p.project_code)
         self._desc.setText(p.description)
 
-        idx = self._board_combo.findData(p.board)
+        def _key(name: str) -> str:
+            return (name or "").strip().lower().replace("-", "_")
+
+        idx = next((i for i in range(self._board_combo.count())
+                    if _key(self._board_combo.itemData(i)) == _key(p.board)), -1)
         if idx >= 0:
             self._board_combo.setCurrentIndex(idx)
+        else:
+            logger.warning("Placa '%s' do projeto não encontrada em src/boards", p.board)
 
         for sig, pin in p.pins.items():
             self._pin_table.add_row(
@@ -330,6 +410,8 @@ class ProjectEditorDialog(QDialog):
                 desc        = pin.description,
                 active_low  = pin.active_low,
             )
+
+        self._plan_editor.set_entries(p.test_plan)
 
         for path in p.test_paths:
             self._tests_list.addItem(path)
@@ -358,6 +440,14 @@ class ProjectEditorDialog(QDialog):
             )
             return
 
+        plan_errors = self._plan_editor.validate(self._pin_table.pins())
+        if plan_errors:
+            QMessageBox.warning(
+                self, "Plano de testes inválido",
+                "Corrija na aba Plano de testes:\n• " + "\n• ".join(plan_errors)
+            )
+            return
+
         project = ProjectConfig(
             name         = name,
             project_code = code,
@@ -372,6 +462,9 @@ class ProjectEditorDialog(QDialog):
                 self._instr_list.item(i).text()
                 for i in range(self._instr_list.count())
             ],
+            analysis_config = self._original.analysis_config if self._original else "",
+            clocks          = self._clocks,
+            test_plan       = self._plan_editor.entries(),
         )
 
         try:
@@ -383,6 +476,12 @@ class ProjectEditorDialog(QDialog):
 
         self._saved_project = project
         self.accept()
+
+    def open_plan(self, add_refs: list[str] | tuple[str, ...] = ()) -> None:
+        """Mostra a aba "Plano de testes", acrescentando os testes `add_refs`."""
+        for ref in add_refs:
+            self._plan_editor.add_entry(ref)
+        self._tabs.setCurrentWidget(self._plan_editor)
 
     def saved_project(self) -> ProjectConfig | None:
         return getattr(self, "_saved_project", None)

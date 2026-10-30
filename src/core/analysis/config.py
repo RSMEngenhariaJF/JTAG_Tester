@@ -141,6 +141,19 @@ class AnalysisConfig:
         """Retorna a config da métrica. Se não existir, retorna MetricConfig vazio."""
         return self.metrics.get(name, MetricConfig())
 
+    def match(self, measurement_name: str) -> tuple[str, MetricConfig] | None:
+        """Métrica que se aplica à medida: nome exato ou o prefixo mais longo + "_".
+
+        Ex.: o perfil "uart_ber" vale para a medida "uart_ber_115200".
+        Métricas vazias (sem limite nem tolerância) são ignoradas.
+        """
+        cand = [k for k, mc in self.metrics.items() if not mc.is_empty()
+                and (measurement_name == k or measurement_name.startswith(k + "_"))]
+        if not cand:
+            return None
+        key = max(cand, key=len)
+        return key, self.metrics[key]
+
     def limits(self, name: str) -> dict:
         """Atalho: kwargs prontos para funções analyze_*."""
         return self.metric(name).limits_kwargs()

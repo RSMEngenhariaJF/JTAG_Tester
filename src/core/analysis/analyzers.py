@@ -146,6 +146,8 @@ def analyze_timing(
     lim_max = expected_period_s * (1 + tolerance_pct / 100)
 
     m = Measurement(
+
+        nominal=expected_period_s,
         name=name,
         value=mean_period,
         unit="s",
@@ -224,6 +226,7 @@ def analyze_voltage(
     )
 
     return Measurement(
+        nominal=nominal_v,
         name=name,
         value=mean_v,
         unit="V",
@@ -297,6 +300,7 @@ def analyze_frequency(
     )
 
     return Measurement(
+        nominal=expected_hz,
         name=name,
         value=measured_hz,
         unit="Hz",

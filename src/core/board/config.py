@@ -127,8 +127,23 @@ class BoardConfig:
     required_clocks: tuple[tuple[str, str, str], ...]
 
     # ── Periféricos seriais ───────────────────────────────────────────────────
-    usart: UsartConfig
-    spi:   SpiConfig
+    # None → os testes de loopback correspondentes são pulados (SKIP). Os drivers
+    # de USART/SPI (instruments/) usam os registradores do STM32F4.
+    usart: UsartConfig | None = None
+    spi:   SpiConfig | None = None
+
+    # ── Conexão (opcionais) ───────────────────────────────────────────────────
+    # pyocd_target: alvo do pyOCD quando difere de `target` (que segue o
+    #   Mcu.UserName do CubeMX, ex. "stm32h753zitx" → pyOCD "stm32h743xx").
+    # connect_mode: "halt" | "attach" | "under-reset" | "pre-reset".
+    # resume_after_connect: libera o núcleo após conectar (o firmware volta a rodar).
+    pyocd_target:         str  = ""
+    connect_mode:         str  = "halt"
+    resume_after_connect: bool = False
+
+    # Registrador RCC com os bits GPIOxEN (AHB1ENR no F4, AHB4ENR no H7):
+    # testes genéricos habilitam o clock de qualquer porta com f"GPIO{x}EN".
+    gpio_clock_reg:       str  = "AHB1ENR"
 
     def __str__(self) -> str:
         return f"{self.project_code} — {self.name}"

@@ -25,6 +25,7 @@ class MockDriver(InstrumentDriver):
     def __init__(self, config: InstrumentConfig) -> None:
         super().__init__(config)
         self._responses: dict[str, str] = config.params.get("responses", {})
+        self._raw: dict[str, bytes] = {}
         self.log: list[tuple[str, str]] = []   # [(cmd, response), ...]
 
     def connect(self) -> None:
@@ -44,9 +45,22 @@ class MockDriver(InstrumentDriver):
         self.log.append((cmd, response))
         return response
 
+    def query_raw(self, cmd: str, timeout_ms: int | None = None) -> bytes:
+        response = self._raw.get(cmd, b"#10")
+        self.log.append((cmd, f"<{len(response)} bytes>"))
+        return response
+
+    def identify(self) -> str:
+        """*IDN? sem registrar no log (o registry chama ao conectar)."""
+        return self._responses.get("*IDN?", "MOCK,SIMULADO,0,0")
+
     def set_response(self, cmd: str, response: str) -> None:
         """Configura resposta para um comando específico em tempo de teste."""
         self._responses[cmd] = response
+
+    def set_raw_response(self, cmd: str, response: bytes) -> None:
+        """Configura resposta binária (ex.: bloco IEEE 488.2) para query_raw()."""
+        self._raw[cmd] = response
 
     def clear_log(self) -> None:
         self.log.clear()

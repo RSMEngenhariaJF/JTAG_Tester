@@ -46,6 +46,7 @@ PERIPH_TYPES: list[str] = [
     "TIM",
     "EXTI",
     "CAN",
+    "ETH",
 ]
 
 # Funções típicas por tipo (usado como sugestão na GUI)
@@ -60,6 +61,7 @@ PERIPH_ROLES: dict[str, list[str]] = {
     "TIM":  ["CH1", "CH2", "CH3", "CH4", "ETR", "BKIN"],
     "EXTI": ["RISING", "FALLING", "BOTH"],
     "CAN":  ["TX", "RX"],
+    "ETH":  ["MDC", "MDIO", "REF_CLK", "CRS_DV", "RXD0", "RXD1", "TX_EN", "TXD0", "TXD1"],
 }
 
 
@@ -136,6 +138,40 @@ class PinDef:
 
 
 @dataclass
+class TestPlanEntry:
+    """Uma instância de teste parametrizado no plano do projeto.
+
+    test   — referência "arquivo.py:Classe", relativa à raiz do repositório
+             (ex.: "TESTES_PLATAFORMA/IO/piscar_led.py:PiscarLed")
+    label  — rótulo da instância; entra no nome do resultado
+    params — valores dos parâmetros declarados pelo teste (sinais por nome)
+    repeat — quantas vezes rodar (repetibilidade); > 1 junta as métricas das execuções
+    """
+
+    __test__ = False  # evita coleta pelo pytest
+
+    test:    str
+    label:   str = ""
+    params:  dict = field(default_factory=dict)
+    enabled: bool = True
+    repeat:  int = 1
+
+    def to_dict(self) -> dict:
+        d: dict = {"test": self.test, "label": self.label, "params": self.params}
+        if not self.enabled:
+            d["enabled"] = False
+        if self.repeat > 1:
+            d["repeat"] = self.repeat
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> TestPlanEntry:
+        return cls(test=d["test"], label=d.get("label", ""),
+                   params=dict(d.get("params", {})), enabled=bool(d.get("enabled", True)),
+                   repeat=max(1, int(d.get("repeat", 1))))
+
+
+@dataclass
 class ProjectConfig:
     """Configuração completa de um produto testável.
 
@@ -151,6 +187,10 @@ class ProjectConfig:
     instruments:     list[str]            = field(default_factory=list)
     description:     str                  = ""
     analysis_config: str                  = ""  # filename em analysis_configs/
+    test_plan:       list[TestPlanEntry]  = field(default_factory=list)
+    # Clock esperado do produto (importado do .ioc): "HSE", "SYSCLK", "CPU", "HCLK",
+    # "APB1".."APB4", "TIM_APB1", "TIM_APB2" em Hz e "fonte" ("PLL1", "HSE"...)
+    clocks:          dict                 = field(default_factory=dict)
 
     # ── Acesso por sinal ─────────────────────────────────────────────────
 
@@ -220,6 +260,10 @@ class ProjectConfig:
         }
         if self.analysis_config:
             d["analysis_config"] = self.analysis_config
+        if self.test_plan:
+            d["test_plan"] = [e.to_dict() for e in self.test_plan]
+        if self.clocks:
+            d["clocks"] = self.clocks
         return d
 
     @classmethod
@@ -233,6 +277,8 @@ class ProjectConfig:
             test_paths      = d.get("test_paths", []),
             instruments     = d.get("instruments", []),
             analysis_config = d.get("analysis_config", ""),
+            test_plan       = [TestPlanEntry.from_dict(e) for e in d.get("test_plan", [])],
+            clocks          = d.get("clocks", {}),
         )
 
     # ── Importação / exportação CSV ───────────────────────────────────────

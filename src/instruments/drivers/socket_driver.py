@@ -73,6 +73,26 @@ class SocketDriver(InstrumentDriver):
                 break
         return b"".join(chunks).decode(errors="replace").strip()
 
+    def query_raw(self, cmd: str, timeout_ms: int | None = None) -> bytes:
+        """Lê um bloco IEEE 488.2 completo (#<n><len><dados>) após enviar `cmd`."""
+        assert self._sock is not None, "Instrumento não conectado"
+        from core.instruments.scpi import block_total_size
+
+        old = self._sock.gettimeout()
+        if timeout_ms is not None:
+            self._sock.settimeout(timeout_ms / 1000.0)
+        try:
+            self.write(cmd)
+            buf = b""
+            while (total := block_total_size(buf)) is None or len(buf) < total:
+                chunk = self._sock.recv(65536)
+                if not chunk:
+                    raise ConnectionError("Conexão fechada no meio do bloco binário")
+                buf += chunk
+            return buf
+        finally:
+            self._sock.settimeout(old)
+
     def query(self, cmd: str, timeout_ms: int | None = None) -> str:
         if timeout_ms is not None and self._sock is not None:
             old = self._sock.gettimeout()

@@ -1,0 +1,264 @@
+{
+  "name": "Nucleo H753 — Básico",
+  "project_code": "NUCLEO-H753-001",
+  "board": "nucleo_h753zi",
+  "description": "Suite padrão com os LEDs LD1/LD2/LD3 e o botão B1 da Nucleo-144 H753ZI",
+  "pins": {
+    "led": {
+      "port": "GPIOB",
+      "pin": 0,
+      "description": "LED verde LD1"
+    },
+    "led_amarelo": {
+      "port": "GPIOE",
+      "pin": 1,
+      "description": "LED amarelo LD2"
+    },
+    "led_vermelho": {
+      "port": "GPIOB",
+      "pin": 14,
+      "description": "LED vermelho LD3"
+    },
+    "button": {
+      "port": "GPIOC",
+      "pin": 13,
+      "description": "Botão azul B1 (ativo-alto)",
+      "active_low": false
+    },
+    "uart3_tx": {
+      "port": "GPIOD",
+      "pin": 8,
+      "description": "USART3 TX — Virtual COM do STLINK-V3",
+      "peripheral": {
+        "type": "UART",
+        "name": "USART3",
+        "role": "TX",
+        "params": {
+          "baudrate": 115200
+        }
+      }
+    },
+    "uart3_rx": {
+      "port": "GPIOD",
+      "pin": 9,
+      "description": "USART3 RX — Virtual COM do STLINK-V3",
+      "peripheral": {
+        "type": "UART",
+        "name": "USART3",
+        "role": "RX",
+        "params": {
+          "baudrate": 115200
+        }
+      }
+    },
+    "i2c1_scl": {
+      "port": "GPIOB",
+      "pin": 8,
+      "description": "I2C1 SCL — Arduino D15 (CN7)",
+      "peripheral": {
+        "type": "I2C",
+        "name": "I2C1",
+        "role": "SCL"
+      }
+    },
+    "i2c1_sda": {
+      "port": "GPIOB",
+      "pin": 9,
+      "description": "I2C1 SDA — Arduino D14 (CN7)",
+      "peripheral": {
+        "type": "I2C",
+        "name": "I2C1",
+        "role": "SDA"
+      }
+    },
+    "spi1_sck": {
+      "port": "GPIOA",
+      "pin": 5,
+      "description": "SPI1 SCK — Arduino D13 (CN7)",
+      "peripheral": {
+        "type": "SPI",
+        "name": "SPI1",
+        "role": "SCK"
+      }
+    },
+    "spi1_miso": {
+      "port": "GPIOA",
+      "pin": 6,
+      "description": "SPI1 MISO — Arduino D12 (CN7)",
+      "peripheral": {
+        "type": "SPI",
+        "name": "SPI1",
+        "role": "MISO"
+      }
+    },
+    "spi1_mosi": {
+      "port": "GPIOB",
+      "pin": 5,
+      "description": "SPI1 MOSI — Arduino D11 (CN7)",
+      "peripheral": {
+        "type": "SPI",
+        "name": "SPI1",
+        "role": "MOSI"
+      }
+    },
+    "can1_rx": {
+      "port": "GPIOD",
+      "pin": 0,
+      "description": "FDCAN1 RX (CN9)",
+      "peripheral": {
+        "type": "CAN",
+        "name": "FDCAN1",
+        "role": "RX"
+      }
+    },
+    "can1_tx": {
+      "port": "GPIOD",
+      "pin": 1,
+      "description": "FDCAN1 TX (CN9)",
+      "peripheral": {
+        "type": "CAN",
+        "name": "FDCAN1",
+        "role": "TX"
+      }
+    },
+    "eth_mdc": {
+      "port": "GPIOC",
+      "pin": 1,
+      "description": "ETH MDC — PHY LAN8742A",
+      "peripheral": {
+        "type": "ETH",
+        "name": "ETH",
+        "role": "MDC"
+      }
+    },
+    "eth_mdio": {
+      "port": "GPIOA",
+      "pin": 2,
+      "description": "ETH MDIO — PHY LAN8742A",
+      "peripheral": {
+        "type": "ETH",
+        "name": "ETH",
+        "role": "MDIO"
+      }
+    }
+  },
+  "test_paths": [],
+  "instruments": [],
+  "test_plan": [
+    {
+      "test": "TESTES_PLATAFORMA/IO/piscar_led.py:PiscarLed",
+      "label": "LEDs indicadores",
+      "params": {
+        "pinos": [
+          "led",
+          "led_amarelo",
+          "led_vermelho"
+        ],
+        "ciclos": 2,
+        "periodo_ms": 300,
+        "sequencial": true
+      }
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/gpio.py:NivelEntrada",
+      "label": "Botão B1 solto",
+      "params": {
+        "pinos": [
+          "button"
+        ],
+        "esperado": "inativo",
+        "pull": "manter",
+        "forcar_entrada": true
+      }
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/gpio.py:PullCurto",
+      "label": "Pinos de expansão sem curto",
+      "params": {
+        "pinos": [
+          "i2c1_scl",
+          "i2c1_sda",
+          "can1_rx",
+          "can1_tx"
+        ]
+      }
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/interrupcoes.py:InterrupcaoExterna",
+      "label": "Botão B1 (EXTI13)",
+      "params": {
+        "pino": [
+          "button"
+        ],
+        "borda": "subida",
+        "estimulo": "software (SWIER)",
+        "parar_nucleo": true
+      }
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/comunicacao.py:UartLoopback",
+      "label": "USART3 VCP 115200",
+      "params": {
+        "periferico": "USART3",
+        "modo": "half-duplex interno (só TX)",
+        "baud": 115200,
+        "bytes": 64,
+        "padrao": "aleatório"
+      }
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/comunicacao.py:UartLoopback",
+      "label": "USART3 2 Mbaud",
+      "params": {
+        "periferico": "USART3",
+        "modo": "half-duplex interno (só TX)",
+        "baud": 2000000,
+        "bytes": 64,
+        "padrao": "aleatório"
+      }
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/comunicacao.py:I2cVarredura",
+      "label": "I2C1 (Arduino D14/D15)",
+      "params": {
+        "periferico": "I2C1",
+        "esperados": "",
+        "pull_interno": true
+      }
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/comunicacao.py:SpiLoopback",
+      "label": "SPI1 — requer jumper D11→D12",
+      "params": {
+        "periferico": "SPI1",
+        "palavras": 16,
+        "divisor": "/256",
+        "modo": "0",
+        "padrao": "aleatório"
+      },
+      "enabled": false
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/comunicacao.py:CanLoopback",
+      "label": "FDCAN1 loopback interno",
+      "params": {
+        "periferico": "FDCAN1",
+        "bitrate": "500000",
+        "quadros": 8
+      }
+    },
+    {
+      "test": "TESTES_PLATAFORMA/BLOCOS/comunicacao.py:EthernetPhy",
+      "label": "PHY LAN8742A",
+      "params": {
+        "periferico": "ETH",
+        "endereco": 0,
+        "exigir_link": false
+      }
+    }
+  ],
+  "clocks": {
+    "HSE": 8000000.0,
+    "HSE_BYPASS": true
+  }
+}

@@ -63,3 +63,14 @@ class VisaDriver(InstrumentDriver):
     def read(self) -> str:
         assert self._resource is not None, "Instrumento não conectado"
         return self._resource.read().strip()
+
+    def query_raw(self, cmd: str, timeout_ms: int | None = None) -> bytes:
+        assert self._resource is not None, "Instrumento não conectado"
+        old = self._resource.timeout
+        if timeout_ms is not None:
+            self._resource.timeout = timeout_ms
+        try:
+            self._resource.write(cmd)
+            return bytes(self._resource.read_raw())
+        finally:
+            self._resource.timeout = old

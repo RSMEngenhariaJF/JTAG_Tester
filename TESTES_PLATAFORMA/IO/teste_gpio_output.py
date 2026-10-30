@@ -1,68 +1,43 @@
 """Exemplo — IO: Teste de saída GPIO.
 
-Verifica se o pino de LED da placa selecionada na GUI consegue
-ir para nível alto e baixo, lendo de volta o ODR.
+Verifica se o pino de LED da placa selecionada na GUI consegue ir para nível
+alto e baixo, lendo de volta o ODR. Montado como bancada modular (src/testbench):
 
-Por padrão, usa os pinos definidos no BoardConfig (led_port / led_pin).
-Para testar um pino diferente, substitua as constantes abaixo por
-valores fixos e comente a seção "Modo automático".
+    estímulo  Levels([1, 0])     — SET e RESET
+    driver    GpioOutputDriver   — saída push-pull, níveis elétricos (raw)
+    monitor   GpioLatchMonitor   — lê o ODR
+    decisão   FollowsDrive       — o ODR acompanhou os dois níveis?
+
+Por padrão, usa o pino de LED do BoardConfig (led_port / led_pin). Para testar
+outro pino, troque o Signal em build() — ou use o bloco "Piscar LED" no
+Plano de testes, que escolhe os pinos pelo Pinout do projeto.
 """
 
-from tests_builtin.base import BuiltinTest, TestResult
-
-# ─── Modo fixo: descomente e preencha para usar pino específico ───────────────
-# PORT        = "GPIOA"
-# PIN         = 5
-# CLOCK_REG   = "AHB1ENR"
-# CLOCK_FIELD = "GPIOAEN"
-# ─────────────────────────────────────────────────────────────────────────────
+from testbench import ComposedTest, Testbench
+from testbench.decision import FollowsDrive
+from testbench.gpio import GpioLatchMonitor, GpioOutputDriver
+from testbench.stimulus import Levels
+from tests_builtin.params import Signal
 
 
-class GpioOutputTest(BuiltinTest):
+class GpioOutputTest(ComposedTest):
     name        = "GPIO Output"
     description = (
         "Verifica saída no pino de LED do BoardConfig: "
         "SET→ODR=1 e RESET→ODR=0 via BSRR."
     )
 
-    def _run(self, pal) -> TestResult:
-        # Modo automático: lê a placa selecionada na GUI
+    def build(self) -> Testbench:
         from core.board.config import get_active_board
-        cfg         = get_active_board()
-        port        = cfg.led_port
-        pin         = cfg.led_pin
-        clock_reg   = cfg.led_clock_reg
-        clock_field = cfg.led_clock_field
+        cfg = get_active_board()
+        self.led = Signal("led", cfg.led_port, cfg.led_pin)
+        drv = GpioOutputDriver(self.led, raw=True)
+        mon = GpioLatchMonitor(self.led, raw=True)
+        return Testbench([drv], [mon], Levels(drv.name, [1, 0]),
+                         [FollowsDrive(mon.name, drv.name, label="led")])
 
-        # Habilita clock do GPIO
-        pal.modify_field("RCC", clock_reg, clock_field, 1)
-
-        # Salva estado para restaurar no finally
-        orig_moder = pal.read_field(port, "MODER", f"MODER{pin}")
-        orig_odr   = pal.read_field(port, "ODR",   f"ODR{pin}")
-
-        try:
-            # Configura como saída push-pull (MODER = 0b01)
-            pal.modify_field(port, "MODER", f"MODER{pin}", 0b01)
-
-            # SET via BSRR (bits[15:0] colocam o pino em nível alto)
-            pal.write_reg(port, "BSRR", 1 << pin)
-            level_high = pal.read_field(port, "ODR", f"ODR{pin}")
-
-            # RESET via BSRR (bits[31:16] colocam o pino em nível baixo)
-            pal.write_reg(port, "BSRR", 1 << (pin + 16))
-            level_low = pal.read_field(port, "ODR", f"ODR{pin}")
-
-            if level_high == 1 and level_low == 0:
-                return self._pass(f"{port}.{pin} SET=1 RESET=0 OK")
-
-            return self._fail(
-                f"{port}.{pin} SET={level_high} RESET={level_low} "
-                f"(esperado 1 e 0)",
-                measured=(level_high, level_low),
-                expected=(1, 0),
-            )
-        finally:
-            # Restaura MODER e ODR originais (sempre, mesmo em erro)
-            pal.modify_field(port, "MODER", f"MODER{pin}", orig_moder)
-            pal.modify_field(port, "ODR",   f"ODR{pin}",   orig_odr)
+    def summary(self, trace, verdicts) -> str:
+        lidos = trace.series(f"odr:{self.led.name}")
+        estado = "OK" if all(v.ok for v in verdicts) else "(esperado 1 e 0)"
+        return f"{self.led.port}.{self.led.pin} SET={lidos[0]} RESET={lidos[1]} {estado}" \
+            if len(lidos) == 2 else "; ".join(v.message for v in verdicts)

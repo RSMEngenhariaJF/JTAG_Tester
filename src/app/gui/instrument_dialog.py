@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from core.instruments.config import DriverType, InstrumentConfig
 from core.instruments.registry import InstrumentRegistry
+from core.instruments.traceability import CalibrationStatus, parse_due
 
 logger = logging.getLogger("app.gui.instrument_dialog")
 
@@ -81,6 +82,13 @@ class InstrumentManagerDialog(QDialog):
         self._btn_add.clicked.connect(self._add_instrument)
         btn_row.addWidget(self._btn_add)
 
+        self._btn_detect = QPushButton("Detectar VISA...")
+        self._btn_detect.setToolTip(
+            "Procura instrumentos VISA (LAN, USB-TMC, GPIB) e lê o *IDN? de cada um"
+        )
+        self._btn_detect.clicked.connect(self._detect_visa)
+        btn_row.addWidget(self._btn_detect)
+
         self._btn_remove = QPushButton("Remover")
         self._btn_remove.setEnabled(False)
         self._btn_remove.clicked.connect(self._remove_instrument)
@@ -109,10 +117,17 @@ class InstrumentManagerDialog(QDialog):
             row = self._table.rowCount()
             self._table.insertRow(row)
             connected = self._registry.is_connected(cfg.name)
+            cal = self._registry.calibration(cfg.name)
             status_item = QTableWidgetItem("●" if connected else "○")
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            status_item.setForeground(
-                Qt.GlobalColor.green if connected else Qt.GlobalColor.gray
+            status_item.setForeground(_status_color(connected, cal))
+            ident = self._registry.identity(cfg.name)
+            due = cfg.params.get("calibration_due") or "—"
+            status_item.setToolTip(
+                f"{'Conectado' if connected else 'Desconectado'}\n"
+                f"Identificação: {ident or '— (conecte para ler *IDN?)'}\n"
+                f"Patrimônio: {cfg.params.get('asset_id') or '—'}\n"
+                f"Calibração válida até: {due} ({cal.value})"
             )
             self._table.setItem(row, _COL_STATUS,  status_item)
             self._table.setItem(row, _COL_NAME,    _cell(cfg.name))
@@ -144,6 +159,26 @@ class InstrumentManagerDialog(QDialog):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             cfg = dlg.result_config()
             if cfg:
+                self._registry.add_config(cfg)
+
+    def _detect_visa(self) -> None:
+        from PySide6.QtGui import QGuiApplication
+
+        from instruments.discovery import discover_visa
+
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            found = discover_visa()
+        except Exception as exc:
+            QGuiApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Detectar VISA", f"Falha na busca: {exc}")
+            return
+        QGuiApplication.restoreOverrideCursor()
+
+        known = {c.address for c in self._registry.configs()}
+        dlg = _DetectDialog(found, known, {c.name for c in self._registry.configs()}, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            for cfg in dlg.selected_configs():
                 self._registry.add_config(cfg)
 
     def _remove_instrument(self) -> None:
@@ -198,6 +233,17 @@ class _AddInstrumentDialog(QDialog):
         self._desc = QLineEdit()
         self._desc.setPlaceholderText("Rigol DM3058 — multímetro bancada")
         top.addRow("Descrição", self._desc)
+
+        self._asset = QLineEdit()
+        self._asset.setPlaceholderText("PAT-00123 (opcional)")
+        top.addRow("Patrimônio", self._asset)
+
+        self._cal_due = QLineEdit()
+        self._cal_due.setPlaceholderText("AAAA-MM-DD (opcional)")
+        self._cal_due.setToolTip(
+            "Validade da calibração. Aparece no relatório; vencida gera aviso ao conectar."
+        )
+        top.addRow("Calibração até", self._cal_due)
 
         self._driver = QComboBox()
         _LABELS = {
@@ -387,6 +433,11 @@ class _AddInstrumentDialog(QDialog):
             QMessageBox.warning(self, "Campo obrigatório", "Informe um nome para o instrumento.")
             return
 
+        if self._cal_due.text().strip() and parse_due(self._cal_due.text()) is None:
+            QMessageBox.warning(self, "Data inválida",
+                                "Informe a validade da calibração como AAAA-MM-DD.")
+            return
+
         if dt != DriverType.MOCK:
             wg    = self._page_widgets[dt]
             addr  = wg.get("address")
@@ -435,6 +486,11 @@ class _AddInstrumentDialog(QDialog):
         else:  # MOCK
             address = "mock://local"
 
+        if self._asset.text().strip():
+            params["asset_id"] = self._asset.text().strip()
+        if self._cal_due.text().strip():
+            params["calibration_due"] = self._cal_due.text().strip()
+
         return InstrumentConfig(
             name        = name,
             driver_type = dt,
@@ -447,6 +503,81 @@ class _AddInstrumentDialog(QDialog):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class _DetectDialog(QDialog):
+    """Lista o resultado da busca VISA para o usuário escolher o que cadastrar."""
+
+    def __init__(self, found: list, known_addresses: set[str], known_names: set[str],
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+
+        self.setWindowTitle("Instrumentos VISA encontrados")
+        self.setMinimumSize(620, 300)
+        self._found = found
+        self._known_names = known_names
+        lay = QVBoxLayout(self)
+        if not found:
+            lay.addWidget(QLabel(
+                "Nenhum instrumento respondeu.\n"
+                "Confira cabo/rede e se o aparelho está na mesma sub-rede do PC."
+            ))
+        self._list = QListWidget()
+        for i, d in enumerate(found):
+            ident = d.identity
+            text = f"{ident}  —  {d.resource}" if ident else f"{d.resource}  —  sem resposta"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, i)
+            already = d.resource in known_addresses
+            usable = ident is not None and not already
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if usable else Qt.CheckState.Unchecked)
+            if already:
+                item.setText(text + "  (já cadastrado)")
+            if d.error:
+                item.setToolTip(d.error)
+            self._list.addItem(item)
+        lay.addWidget(self._list)
+        lay.addWidget(_hint(
+            "Os marcados entram na lista com nome sugerido (osc, sa...). "
+            "Edite depois para informar patrimônio e calibração."
+        ))
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def selected_configs(self) -> list[InstrumentConfig]:
+        out: list[InstrumentConfig] = []
+        names = set(self._known_names)
+        for row in range(self._list.count()):
+            item = self._list.item(row)
+            if item.checkState() != Qt.CheckState.Checked:
+                continue
+            d = self._found[item.data(Qt.ItemDataRole.UserRole)]
+            base = d.suggested_name()
+            name, n = base, 2
+            while name in names:
+                name, n = f"{base}{n}", n + 1
+            names.add(name)
+            out.append(InstrumentConfig(
+                name=name, driver_type=DriverType.VISA, address=d.resource,
+                description=str(d.identity or d.idn), params={"timeout_ms": 5000},
+            ))
+        return out
+
+
+def _status_color(connected: bool, cal: CalibrationStatus):
+    from PySide6.QtGui import QColor
+
+    if cal == CalibrationStatus.EXPIRED:
+        return QColor("#c00000")
+    if cal == CalibrationStatus.DUE_SOON:
+        return QColor("#d07000")
+    return QColor("#00a000") if connected else QColor("#909090")
 
 
 def _cell(text: str) -> QTableWidgetItem:

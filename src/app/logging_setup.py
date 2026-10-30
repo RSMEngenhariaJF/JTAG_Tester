@@ -67,6 +67,10 @@ def setup_logging(level: int = logging.INFO) -> Path | None:
     console.setLevel(level)
     root.addHandler(console)
 
+    # Buffer em memória da janela de logs (dev e produção) + exceções não tratadas
+    from app.log_buffer import install
+    install(root)
+
     if not is_dev_mode():
         return None
 

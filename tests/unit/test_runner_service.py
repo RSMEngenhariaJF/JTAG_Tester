@@ -147,10 +147,10 @@ class TestRunnerServiceState:
 class TestRunnerServiceSignals:
     def test_suite_started_emits_total_count(self, qtbot, runner) -> None:
         tests = [DeviceIdTest(), ClockTest()]
-        with qtbot.waitSignal(runner.suite_started, timeout=3000) as sig:
+        with qtbot.waitSignal(runner.suite_finished, timeout=3000), \
+                qtbot.waitSignal(runner.suite_started, timeout=3000) as sig:
             runner.run(tests)
         assert sig.args[0] == 2
-        qtbot.waitSignal(runner.suite_finished, timeout=3000)
 
     def test_test_started_emits_name(self, qtbot, runner) -> None:
         names: list[str] = []
@@ -192,11 +192,11 @@ class TestRunnerServiceSignals:
     def test_running_true_during_execution(self, qtbot, runner) -> None:
         """is_running True enquanto _BlockingTest trava a thread."""
         blocker = _BlockingTest()
-        runner.run([blocker])
-        blocker.wait_until_started()    # espera thread bloquear no gate
-        assert runner.is_running
-        blocker.release()
-        qtbot.waitSignal(runner.suite_finished, timeout=3000)
+        with qtbot.waitSignal(runner.suite_finished, timeout=3000):
+            runner.run([blocker])
+            blocker.wait_until_started()    # espera thread bloquear no gate
+            assert runner.is_running
+            blocker.release()
 
     def test_result_names_match_test_names(self, qtbot, runner) -> None:
         tests = [DeviceIdTest(), ClockTest()]
